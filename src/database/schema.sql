@@ -21,6 +21,8 @@ CREATE TABLE IF NOT EXISTS teams (
   size INTEGER NOT NULL,
   current_size INTEGER DEFAULT 1,
   channel_id TEXT,
+  voice_channel_id TEXT,
+  category_id TEXT,
   role_id TEXT,
   tournament_id INTEGER,
   locked INTEGER DEFAULT 0,

@@ -1,6 +1,30 @@
 const { EmbedBuilder } = require('discord.js');
 const { embedColor, botName } = require('../config');
 
+/**
+ * Safely parse a date string into a Discord timestamp.
+ * Handles ISO strings, "YYYY-MM-DD HH:MM", "dd/mm/yyyy", etc.
+ */
+function formatStartTime(dateStr) {
+    if (!dateStr) return 'TBD';
+
+    // Try dd/mm/yyyy format
+    const ddmm = dateStr.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+    if (ddmm) {
+        const rest = dateStr.slice(ddmm[0].length).trim().replace(' ', 'T');
+        const iso = `${ddmm[3]}-${ddmm[2].padStart(2, '0')}-${ddmm[1].padStart(2, '0')}${rest ? 'T' + rest : ''}`;
+        const d = new Date(iso);
+        if (!isNaN(d.getTime())) return `<t:${Math.floor(d.getTime() / 1000)}:F>`;
+    }
+
+    // Normalize "YYYY-MM-DD HH:MM" → "YYYY-MM-DDTHH:MM"
+    const normalized = dateStr.trim().replace(' ', 'T');
+    const date = new Date(normalized);
+    const timestamp = date.getTime();
+    if (isNaN(timestamp)) return dateStr; // fallback to raw string
+    return `<t:${Math.floor(timestamp / 1000)}:F>`;
+}
+
 function successEmbed(title, description) {
     return new EmbedBuilder()
         .setColor(0x22C55E)
@@ -57,7 +81,7 @@ function tournamentEmbed(tournament) {
             { name: '👥 Team Size', value: `${tournament.team_size}`, inline: true },
             { name: '📋 Format', value: tournament.format.charAt(0).toUpperCase() + tournament.format.slice(1), inline: true },
             { name: '🎟️ Max Teams', value: `${tournament.max_teams}`, inline: true },
-            { name: '📅 Start Time', value: `<t:${Math.floor(new Date(tournament.start_time).getTime() / 1000)}:F>`, inline: true },
+            { name: '📅 Start Time', value: formatStartTime(tournament.start_time), inline: true },
             { name: '⏰ Check-in Window', value: `${tournament.checkin_window} min`, inline: true },
         )
         .setFooter({ text: `${botName} • Tournament ID: ${tournament.tournament_code}` })

@@ -1,6 +1,6 @@
 const { SlashCommandBuilder } = require('discord.js');
 const { ownerOnly, logOwnerAction } = require('../../middleware/ownerOnly');
-const { tournaments, teams: teamDb } = require('../../database/db');
+const { tournaments, teams: teamDb, matches: matchDb } = require('../../database/db');
 const { successEmbed, errorEmbed } = require('../../utils/embeds');
 const logger = require('../../utils/logger');
 
@@ -27,7 +27,6 @@ module.exports = {
             return interaction.reply({ embeds: [errorEmbed('Not Found', `No tournament with code \`${code}\`.`)], ephemeral: true });
         }
 
-        // Find team by name in this tournament
         const registeredTeams = tournaments.getRegisteredTeams(tournament.id);
         const team = registeredTeams.find(t => t.name.toLowerCase() === teamName.toLowerCase());
 
@@ -41,28 +40,41 @@ module.exports = {
 
         await interaction.deferReply();
 
+        const guild = interaction.guild;
+
         // Unregister from tournament
         tournaments.unregisterTeam(tournament.id, team.id);
         teamDb.setTournament(team.id, null);
 
-        // Remove channel access
-        if (team.role_id) {
-            try {
-                const guild = interaction.guild;
-                // Find match channels and remove team's role permissions
-                const { matches: matchDb } = require('../../database/db');
-                const allMatches = matchDb.getByTournament(tournament.id);
-                for (const match of allMatches) {
-                    if (match.channel_id && (match.team1_id === team.id || match.team2_id === team.id)) {
-                        try {
-                            const channel = await guild.channels.fetch(match.channel_id);
-                            if (channel) {
-                                await channel.permissionOverwrites.delete(team.role_id);
-                                await channel.send({ content: `## 🚫 Team Kicked\n**${team.name}** has been removed from this tournament by the server owner.` });
-                            }
-                        } catch (_) { }
+        // Remove from match channels
+        const allMatches = matchDb.getByTournament(tournament.id);
+        for (const match of allMatches) {
+            if (match.channel_id && (match.team1_id === team.id || match.team2_id === team.id)) {
+                try {
+                    const channel = await guild.channels.fetch(match.channel_id);
+                    if (channel) {
+                        await channel.send({ content: `## 🚫 Team Kicked\n**${team.name}** has been removed from this tournament by the server owner.` });
                     }
+                } catch (_) { }
+            }
+        }
+
+        // Delete team text channel
+        if (team.channel_id) {
+            try {
+                const ch = await guild.channels.fetch(team.channel_id);
+                if (ch) {
+                    await ch.send({ content: `## 🚫 Team Kicked\n**${team.name}** has been kicked from **${tournament.name}**. Channel will be deleted in 10 seconds.` });
+                    setTimeout(() => ch.delete('Team kicked from tournament').catch(() => { }), 10_000);
                 }
+            } catch (_) { }
+        }
+
+        // Delete team voice channel
+        if (team.voice_channel_id) {
+            try {
+                const vc = await guild.channels.fetch(team.voice_channel_id);
+                if (vc) setTimeout(() => vc.delete('Team kicked from tournament').catch(() => { }), 10_000);
             } catch (_) { }
         }
 
@@ -74,7 +86,7 @@ module.exports = {
         logger.info(`Team kicked: ${team.name} from ${tournament.name} (${code})`);
 
         await interaction.editReply({
-            embeds: [successEmbed('Team Kicked', `**${team.name}** has been removed from **${tournament.name}**.\n\nThis action has been logged.`)],
+            embeds: [successEmbed('Team Kicked', `**${team.name}** has been removed from **${tournament.name}**.\n\n🗑️ Team text & voice channels will be deleted.\n📝 This action has been logged.`)],
         });
     },
 };

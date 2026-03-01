@@ -1,5 +1,5 @@
 const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
-const { players, teams } = require('../../database/db');
+const { players, teams, queue } = require('../../database/db');
 const { successEmbed, errorEmbed, teamEmbed } = require('../../utils/embeds');
 const logger = require('../../utils/logger');
 
@@ -49,6 +49,11 @@ module.exports = {
             });
         }
 
+        // If player is in matchmaking queue, auto-remove (mutual exclusivity)
+        if (queue.isQueued(interaction.user.id)) {
+            queue.remove(interaction.user.id);
+        }
+
         await interaction.deferReply({ ephemeral: true });
 
         const guild = interaction.guild;
@@ -57,7 +62,7 @@ module.exports = {
         teams.addMember(team.id, interaction.user.id);
         teams.incrementSize(team.id);
 
-        // Grant direct channel access (no role needed)
+        // Grant direct channel access (text + voice)
         if (team.channel_id) {
             try {
                 const channel = await guild.channels.fetch(team.channel_id);
@@ -68,7 +73,21 @@ module.exports = {
                     });
                 }
             } catch (err) {
-                console.log(`⚠️ Could not grant channel access: ${err.message}`);
+                console.log(`⚠️ Could not grant text channel access: ${err.message}`);
+            }
+        }
+        if (team.voice_channel_id) {
+            try {
+                const vc = await guild.channels.fetch(team.voice_channel_id);
+                if (vc) {
+                    await vc.permissionOverwrites.create(interaction.user.id, {
+                        ViewChannel: true,
+                        Connect: true,
+                        Speak: true,
+                    });
+                }
+            } catch (err) {
+                console.log(`⚠️ Could not grant voice channel access: ${err.message}`);
             }
         }
 
@@ -102,9 +121,11 @@ module.exports = {
 
         logger.info(`Player joined team: ${interaction.user.tag} → ${team.name} (${code})`);
 
+        const voiceInfo = finalTeam.voice_channel_id ? `\n🔊 Voice: <#${finalTeam.voice_channel_id}>` : '';
+
         await interaction.editReply({
             embeds: [
-                successEmbed('Joined Team!', `You've joined **${team.name}**!\n\n📢 Channel: <#${team.channel_id}>\n👥 Size: ${finalTeam.current_size}/${finalTeam.size}${finalTeam.locked ? '\n🔒 Team is now locked!' : ''}`),
+                successEmbed('Joined Team!', `You've joined **${team.name}**!\n\n📢 Channel: <#${team.channel_id}>${voiceInfo}\n👥 Size: ${finalTeam.current_size}/${finalTeam.size}${finalTeam.locked ? '\n🔒 Team is now locked!' : ''}`),
             ],
         });
     },

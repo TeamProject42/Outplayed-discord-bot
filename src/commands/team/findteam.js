@@ -2,9 +2,12 @@ const {
     SlashCommandBuilder,
     ChannelType,
     PermissionFlagsBits,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
 } = require('discord.js');
 const config = require('../../config');
-const { players, teams, queue } = require('../../database/db');
+const { players, teams, queue, tournaments } = require('../../database/db');
 const { generateTeamCode } = require('../../utils/codeGenerator');
 const { successEmbed, errorEmbed, infoEmbed, teamEmbed } = require('../../utils/embeds');
 const logger = require('../../utils/logger');
@@ -18,10 +21,10 @@ module.exports = {
         .setDescription('🔍 Auto-matchmake into a team based on your rank')
         .addIntegerOption(opt =>
             opt.setName('size')
-                .setDescription('Team size (2-5, default: 2)')
+                .setDescription('Team size (2-10, default: 2)')
                 .setRequired(false)
                 .setMinValue(2)
-                .setMaxValue(5)
+                .setMaxValue(10)
         ),
 
     async execute(interaction) {
@@ -40,11 +43,29 @@ module.exports = {
             });
         }
 
+        // Mutual exclusivity: warn if player is already in active teams
+        const existingTeams = teams.getByPlayer(interaction.user.id);
+        // Only block if they're in teams that aren't from completed tournaments
+        const activeTeams = existingTeams.filter(t => {
+            if (!t.tournament_id) return true; // standalone team, counts
+            const tourney = tournaments.getById(t.tournament_id);
+            return tourney && tourney.status !== 'completed';
+        });
+
+        if (activeTeams.length > 0) {
+            const teamList = activeTeams.map(t => `• **${t.name}** (\`${t.code}\`)`).join('\n');
+            return interaction.reply({
+                embeds: [errorEmbed('Already in a Team', `You're currently in a team. Leave your team(s) first before joining solo matchmaking.\n\n${teamList}\n\nUse \`/leaveteam\` to leave.`)],
+                ephemeral: true,
+            });
+        }
+
         const teamSize = interaction.options.getInteger('size') || DEFAULT_TEAM_SIZE;
 
         await interaction.deferReply({ ephemeral: true });
 
         const gameKey = Object.keys(config.games).find(k => config.games[k].name === player.game) || 'valorant';
+        const game = config.games[gameKey];
         const rankBucket = config.getRankBucket(gameKey, player.rank);
 
         // Add to queue
@@ -59,10 +80,11 @@ module.exports = {
             const teamName = `Auto-${rankBucket.charAt(0).toUpperCase() + rankBucket.slice(1)}-${Date.now().toString(36).slice(-4).toUpperCase()}`;
             const code = generateTeamCode();
 
-            const captainIndex = Math.floor(Math.random() * selectedPlayers.length);
+            // First queued player is the captain (not random)
+            const captainPlayer = selectedPlayers[0];
 
             // Create team
-            const result = teams.create(code, teamName, selectedPlayers[captainIndex].player_id, teamSize);
+            const result = teams.create(code, teamName, captainPlayer.player_id, teamSize);
             const teamId = result.lastInsertRowid;
 
             for (const qp of selectedPlayers) {
@@ -75,49 +97,94 @@ module.exports = {
 
             const guild = interaction.guild;
 
-            // Create channel with direct user permissions (no roles needed)
-            let channel = null;
+            // Find or create game-specific category
+            let category = null;
+            if (game) {
+                category = guild.channels.cache.find(
+                    c => c.type === ChannelType.GuildCategory && c.name === `${game.emoji} ${game.name}`
+                );
+                if (!category) {
+                    category = await guild.channels.create({
+                        name: `${game.emoji} ${game.name}`,
+                        type: ChannelType.GuildCategory,
+                        reason: `Outplayed game category for ${game.name}`,
+                    });
+                }
+            }
+
+            // Create channels with direct user permissions
+            let textChannel = null;
+            let voiceChannel = null;
             try {
                 const permissionOverwrites = [
                     { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-                    { id: interaction.client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels] },
+                    { id: interaction.client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak] },
                 ];
 
                 for (const qp of selectedPlayers) {
                     permissionOverwrites.push({
                         id: qp.player_id,
-                        allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages],
+                        allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak],
                     });
                 }
 
-                channel = await guild.channels.create({
+                textChannel = await guild.channels.create({
                     name: `team-${teamName.toLowerCase().replace(/\s+/g, '-')}`,
                     type: ChannelType.GuildText,
+                    parent: category?.id || null,
                     permissionOverwrites,
                     reason: 'Outplayed auto-matched team',
                 });
 
-                teams.updateChannel(teamId, channel.id, null);
+                voiceChannel = await guild.channels.create({
+                    name: `🔊 ${teamName}`,
+                    type: ChannelType.GuildVoice,
+                    parent: category?.id || null,
+                    permissionOverwrites,
+                    reason: 'Outplayed auto-matched team voice',
+                });
+
+                teams.updateChannel(teamId, textChannel.id, voiceChannel.id, category?.id || null);
 
                 const team = teams.getById(teamId);
                 const members = teams.getMembers(teamId);
 
                 const mentionList = selectedPlayers.map(qp => `<@${qp.player_id}>`).join(' ');
-                await channel.send({
-                    content: `## 🎉 Auto-Matched Team!\n${mentionList}\n\nYou've been matched into **${teamName}**!\n👑 Captain: <@${selectedPlayers[captainIndex].player_id}>\n\nTeam Code: \`${code}\``,
+                await textChannel.send({
+                    content: `## 🎉 Auto-Matched Team!\n${mentionList}\n\nYou've been matched into **${teamName}**!\n👑 Captain: <@${captainPlayer.player_id}> *(first to queue)*\n\nTeam Code: \`${code}\``,
                     embeds: [teamEmbed(team, members)],
                 });
+
+                // Captain controls (same as createteam)
+                const captainRow = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder()
+                        .setCustomId(`team_kick_${teamId}_${captainPlayer.player_id}`)
+                        .setLabel('Kick Member')
+                        .setStyle(ButtonStyle.Secondary)
+                        .setEmoji('👢'),
+                    new ButtonBuilder()
+                        .setCustomId(`team_disband_${teamId}_${captainPlayer.player_id}`)
+                        .setLabel('Disband Team')
+                        .setStyle(ButtonStyle.Danger)
+                        .setEmoji('💣'),
+                );
+
+                await textChannel.send({
+                    content: '**👑 Captain Controls** *(Server Owner can also use these)*:',
+                    components: [captainRow],
+                });
             } catch (err) {
-                console.log(`⚠️ Could not create channel for auto-team ${teamName}: ${err.message}`);
+                console.log(`⚠️ Could not create channels for auto-team ${teamName}: ${err.message}`);
             }
 
-            logger.info(`Auto-matched team: ${teamName} (${code}) — ${selectedPlayers.length} players`);
+            logger.info(`Auto-matched team: ${teamName} (${code}) — ${selectedPlayers.length} players, captain: ${captainPlayer.player_id}`);
 
-            const channelInfo = channel ? `\n📢 Channel: <#${channel.id}>` : '';
+            const channelInfo = textChannel ? `\n📢 Channel: <#${textChannel.id}>` : '';
+            const voiceInfo = voiceChannel ? `\n🔊 Voice: <#${voiceChannel.id}>` : '';
 
             await interaction.editReply({
                 embeds: [
-                    successEmbed('Team Found!', `You've been matched into **${teamName}**!${channelInfo}\n👥 ${teamSize} players matched\n🏅 Rank bucket: ${rankBucket}\n📋 Code: \`${code}\``),
+                    successEmbed('Team Found!', `You've been matched into **${teamName}**!${channelInfo}${voiceInfo}\n👥 ${teamSize} players matched\n🏅 Rank bucket: ${rankBucket}\n📋 Code: \`${code}\`\n👑 Captain: <@${captainPlayer.player_id}>`),
                 ],
             });
         } else {

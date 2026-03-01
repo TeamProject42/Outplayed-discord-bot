@@ -22,6 +22,10 @@ function getDb() {
         const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf-8');
         db.exec(schema);
 
+        // Safe column migrations for existing databases
+        try { db.exec('ALTER TABLE teams ADD COLUMN voice_channel_id TEXT'); } catch (e) { /* column exists */ }
+        try { db.exec('ALTER TABLE teams ADD COLUMN category_id TEXT'); } catch (e) { /* column exists */ }
+
         console.log('✅ Database initialized');
     }
     return db;
@@ -80,10 +84,10 @@ const teams = {
         ).all(playerId);
     },
 
-    updateChannel(teamId, channelId, roleId) {
+    updateChannel(teamId, channelId, voiceChannelId, categoryId) {
         return getDb().prepare(
-            'UPDATE teams SET channel_id = ?, role_id = ? WHERE id = ?'
-        ).run(channelId, roleId, teamId);
+            'UPDATE teams SET channel_id = ?, voice_channel_id = ?, category_id = ? WHERE id = ?'
+        ).run(channelId, voiceChannelId || null, categoryId || null, teamId);
     },
 
     incrementSize(teamId) {
@@ -96,12 +100,32 @@ const teams = {
         return getDb().prepare('UPDATE teams SET locked = 1 WHERE id = ?').run(teamId);
     },
 
+    unlock(teamId) {
+        return getDb().prepare('UPDATE teams SET locked = 0 WHERE id = ?').run(teamId);
+    },
+
+    transferCaptain(teamId, newCaptainId) {
+        return getDb().prepare('UPDATE teams SET captain_id = ? WHERE id = ?').run(newCaptainId, teamId);
+    },
+
+    decrementSize(teamId) {
+        return getDb().prepare('UPDATE teams SET current_size = CASE WHEN current_size > 0 THEN current_size - 1 ELSE 0 END WHERE id = ?').run(teamId);
+    },
+
     setTournament(teamId, tournamentId) {
         return getDb().prepare('UPDATE teams SET tournament_id = ? WHERE id = ?').run(tournamentId, teamId);
     },
 
     delete(teamId) {
+        // Clean up all foreign key dependencies
+        getDb().prepare('DELETE FROM tournament_registrations WHERE team_id = ?').run(teamId);
         getDb().prepare('DELETE FROM team_members WHERE team_id = ?').run(teamId);
+        // Clean up match references (checkins first, then matches)
+        const matchIds = getDb().prepare('SELECT id FROM matches WHERE team1_id = ? OR team2_id = ?').all(teamId, teamId).map(m => m.id);
+        for (const mid of matchIds) {
+            getDb().prepare('DELETE FROM checkins WHERE match_id = ?').run(mid);
+        }
+        getDb().prepare('DELETE FROM matches WHERE team1_id = ? OR team2_id = ?').run(teamId, teamId);
         return getDb().prepare('DELETE FROM teams WHERE id = ?').run(teamId);
     },
 
@@ -152,7 +176,7 @@ const tournaments = {
 
     getActive(guildId) {
         return getDb().prepare(
-            "SELECT * FROM tournaments WHERE guild_id = ? AND status IN ('registration', 'active') ORDER BY created_at DESC"
+            "SELECT * FROM tournaments WHERE guild_id = ? AND status IN ('registration', 'registration_closed', 'active') ORDER BY created_at DESC"
         ).all(guildId);
     },
 

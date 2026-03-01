@@ -33,7 +33,7 @@ module.exports = {
             return interaction.reply({ embeds: [errorEmbed('Not Found', `No tournament with code \`${code}\`.`)], ephemeral: true });
         }
 
-        if (tournament.status !== 'registration') {
+        if (tournament.status !== 'registration' && tournament.status !== 'registration_closed') {
             return interaction.reply({ embeds: [errorEmbed('Invalid State', `This tournament is already **${tournament.status}**.`)], ephemeral: true });
         }
 
@@ -71,16 +71,28 @@ module.exports = {
 
             if (!team1 || !team2) continue;
 
+            // Build permission overwrites for all team members individually
+            const permissionOverwrites = [
+                { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+                { id: interaction.client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels] },
+            ];
+
+            // Add each member of both teams
+            const team1Members = teamDb.getMembers(team1.id);
+            const team2Members = teamDb.getMembers(team2.id);
+
+            for (const member of [...team1Members, ...team2Members]) {
+                permissionOverwrites.push({
+                    id: member.discord_id,
+                    allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages],
+                });
+            }
+
             // Create match channel
             const channel = await guild.channels.create({
                 name: `match-${match.matchNumber}-${team1.name.toLowerCase()}-vs-${team2.name.toLowerCase()}`.replace(/\s+/g, '-').substring(0, 100),
                 type: ChannelType.GuildText,
-                permissionOverwrites: [
-                    { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-                    { id: interaction.client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
-                    ...(team1.role_id ? [{ id: team1.role_id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }] : []),
-                    ...(team2.role_id ? [{ id: team2.role_id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }] : []),
-                ],
+                permissionOverwrites,
                 reason: `Tournament match: ${tournament.name}`,
             });
 
@@ -100,8 +112,11 @@ module.exports = {
 
             const mEmbed = matchEmbed({ ...match, status: 'pending', match_number: match.matchNumber }, team1, team2, 1);
 
+            const team1Mentions = team1Members.map(m => `<@${m.discord_id}>`).join(' ');
+            const team2Mentions = team2Members.map(m => `<@${m.discord_id}>`).join(' ');
+
             await channel.send({
-                content: `## ⚔️ Match ${match.matchNumber} — Round 1\n<@&${team1.role_id}> vs <@&${team2.role_id}>\n\n**Both teams must check in to begin!**`,
+                content: `## ⚔️ Match ${match.matchNumber} — Round 1\n${team1Mentions} vs ${team2Mentions}\n\n**Both teams must check in to begin!**`,
                 embeds: [mEmbed],
                 components: [checkinRow],
             });

@@ -11,6 +11,65 @@ const { successEmbed, errorEmbed, tournamentEmbed } = require('../../utils/embed
 const logger = require('../../utils/logger');
 const buttonHandler = require('../../interactions/buttons');
 
+/**
+ * Parses separate date and time strings into a Date object.
+ * Date: "15/03/2025", "15-03-2025", "2025-03-15"
+ * Time: "4pm", "6:30pm", "18:00", "9am"
+ */
+function parseDateAndTime(dateStr, timeStr) {
+    let day, month, year;
+
+    // Try dd/mm/yyyy or dd-mm-yyyy
+    const ddmm = dateStr.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+    if (ddmm) {
+        day = parseInt(ddmm[1]);
+        month = parseInt(ddmm[2]) - 1; // 0-indexed
+        year = parseInt(ddmm[3]);
+    } else {
+        // Try yyyy-mm-dd
+        const iso = dateStr.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/);
+        if (iso) {
+            year = parseInt(iso[1]);
+            month = parseInt(iso[2]) - 1;
+            day = parseInt(iso[3]);
+        } else {
+            return null;
+        }
+    }
+
+    // Parse time
+    const time = parseTimeString(timeStr);
+    if (!time) return null;
+
+    return new Date(year, month, day, time.hours, time.minutes);
+}
+
+/**
+ * Parses time strings like "6pm", "1:30pm", "18:00", "6:30 AM"
+ */
+function parseTimeString(str) {
+    str = str.trim().toLowerCase();
+
+    // Match "6pm", "1:30pm", "6:30 am", "12am"
+    const ampmMatch = str.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/);
+    if (ampmMatch) {
+        let hours = parseInt(ampmMatch[1]);
+        const minutes = parseInt(ampmMatch[2] || '0');
+        const period = ampmMatch[3];
+        if (period === 'pm' && hours !== 12) hours += 12;
+        if (period === 'am' && hours === 12) hours = 0;
+        return { hours, minutes };
+    }
+
+    // Match 24h "18:00", "9:30"
+    const h24Match = str.match(/^(\d{1,2}):(\d{2})$/);
+    if (h24Match) {
+        return { hours: parseInt(h24Match[1]), minutes: parseInt(h24Match[2]) };
+    }
+
+    return null;
+}
+
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('createtournament')
@@ -24,15 +83,16 @@ module.exports = {
                 { name: 'Apex Legends', value: 'Apex Legends' },
                 { name: 'League of Legends', value: 'League of Legends' },
             ))
-        .addIntegerOption(opt => opt.setName('team_size').setDescription('Players per team (2-5)').setRequired(true).setMinValue(2).setMaxValue(5))
-        .addIntegerOption(opt => opt.setName('max_teams').setDescription('Maximum teams allowed').setRequired(true).setMinValue(2).setMaxValue(64))
+        .addIntegerOption(opt => opt.setName('team_size').setDescription('Players per team (1-10)').setRequired(true).setMinValue(1).setMaxValue(10))
+        .addIntegerOption(opt => opt.setName('max_teams').setDescription('Maximum teams allowed').setRequired(true).setMinValue(2).setMaxValue(1024))
         .addStringOption(opt => opt.setName('format').setDescription('Tournament format').setRequired(true)
             .addChoices(
                 { name: 'Knockout (Single Elimination)', value: 'knockout' },
                 { name: 'League (Round Robin)', value: 'league' },
                 { name: 'Swiss', value: 'swiss' },
             ))
-        .addStringOption(opt => opt.setName('start_time').setDescription('Start date/time (e.g. 2025-03-15 18:00)').setRequired(true))
+        .addStringOption(opt => opt.setName('date').setDescription('Start date (e.g. 15/03/2025)').setRequired(true))
+        .addStringOption(opt => opt.setName('time').setDescription('Start time (e.g. 4pm, 6:30pm, 18:00)').setRequired(true))
         .addIntegerOption(opt => opt.setName('checkin_window').setDescription('Check-in window in minutes (default: 15)').setRequired(false))
         .addStringOption(opt => opt.setName('rank_restriction').setDescription('Min rank required (optional)').setRequired(false))
         .addStringOption(opt => opt.setName('entry_fee').setDescription('Entry fee (optional, e.g. "$5")').setRequired(false))
@@ -46,6 +106,19 @@ module.exports = {
         await interaction.deferReply();
 
         const tournamentCode = generateTournamentId();
+
+        // Parse and validate date
+        const rawDate = interaction.options.getString('date').trim();
+        const rawTime = interaction.options.getString('time').trim();
+
+        const parsedDate = parseDateAndTime(rawDate, rawTime);
+
+        if (!parsedDate || isNaN(parsedDate.getTime())) {
+            return interaction.editReply({
+                embeds: [errorEmbed('Invalid Date/Time', `Could not parse date \`${rawDate}\` and time \`${rawTime}\`.\n\n**Date formats:** \`15/03/2025\`, \`15-03-2025\`\n**Time formats:** \`4pm\`, \`6:30pm\`, \`18:00\``)],
+            });
+        }
+
         const data = {
             tournamentCode,
             guildId: interaction.guild.id,
@@ -55,7 +128,7 @@ module.exports = {
             teamSize: interaction.options.getInteger('team_size'),
             maxTeams: interaction.options.getInteger('max_teams'),
             format: interaction.options.getString('format'),
-            startTime: interaction.options.getString('start_time'),
+            startTime: parsedDate.toISOString(),
             checkinWindow: interaction.options.getInteger('checkin_window') || 15,
             rankRestriction: interaction.options.getString('rank_restriction') || null,
             entryFee: interaction.options.getString('entry_fee') || null,
@@ -118,10 +191,33 @@ buttonHandler.register('tourney_register_team_', async (interaction) => {
         return interaction.reply({ embeds: [errorEmbed('No Profile', 'Create a profile first with `/start`.')], ephemeral: true });
     }
 
+    // Only captain can register
+    const playerTeams = teams.getByPlayer(interaction.user.id);
+    const captainTeams = playerTeams.filter(t => t.captain_id === interaction.user.id);
+
+    if (captainTeams.length === 0) {
+        return interaction.reply({
+            embeds: [errorEmbed('Captain Only', 'Only team captains can register. Create a team with `/createteam` first.')],
+            ephemeral: true,
+        });
+    }
+
+    // Check if player is already in a team registered for THIS tournament
+    const registeredTeams = tournaments.getRegisteredTeams(tournamentId);
+    const alreadyRegistered = registeredTeams.find(rt => {
+        const members = teams.getMembers(rt.id);
+        return members.some(m => m.discord_id === interaction.user.id);
+    });
+
+    if (alreadyRegistered) {
+        return interaction.reply({
+            embeds: [errorEmbed('Already Registered', `You're already in **${alreadyRegistered.name}** which is registered for this tournament.\n\nLeave that team first with \`/leaveteam\` to register with a different team.`)],
+            ephemeral: true,
+        });
+    }
+
     // Check rank restriction
     if (tournament.rank_restriction) {
-        // Simple check — player's rank must match or exceed the restriction
-        // For MVP, just check if the player's game matches
         if (player.game !== tournament.game) {
             return interaction.reply({
                 embeds: [errorEmbed('Wrong Game', `This tournament is for **${tournament.game}**. Your profile is set to **${player.game}**.`)],
@@ -130,9 +226,8 @@ buttonHandler.register('tourney_register_team_', async (interaction) => {
         }
     }
 
-    // Find the player's teams that match the tournament team size
-    const playerTeams = teams.getByPlayer(interaction.user.id);
-    const eligibleTeams = playerTeams.filter(t =>
+    // Find eligible teams (right size, locked, not already registered)
+    const eligibleTeams = captainTeams.filter(t =>
         t.size === tournament.team_size && t.locked && !tournaments.isTeamRegistered(tournamentId, t.id)
     );
 
@@ -140,7 +235,7 @@ buttonHandler.register('tourney_register_team_', async (interaction) => {
         return interaction.reply({
             embeds: [errorEmbed(
                 'No Eligible Team',
-                `You need a **locked team of ${tournament.team_size}** players to register.\n\nUse \`/createteam\` to make one, then fill it up!`
+                `You need a **locked team of ${tournament.team_size}** players where you are the captain.\n\nUse \`/createteam\` to make one, then fill it up!`
             )],
             ephemeral: true,
         });
@@ -149,47 +244,32 @@ buttonHandler.register('tourney_register_team_', async (interaction) => {
     // Check max teams
     const regCount = tournaments.getRegistrationCount(tournamentId);
     if (regCount >= tournament.max_teams) {
-        return interaction.reply({ embeds: [errorEmbed('Tournament Full', 'This tournament has reached maximum capacity.')], ephemeral: true });
+        return interaction.reply({ embeds: [errorEmbed('Registration Full', 'This tournament has reached maximum capacity. Registration is closed.')], ephemeral: true });
     }
 
-    // If only one eligible team, auto-register it
-    if (eligibleTeams.length === 1) {
-        const team = eligibleTeams[0];
-
-        // Check if captain
-        if (team.captain_id !== interaction.user.id) {
-            return interaction.reply({
-                embeds: [errorEmbed('Captain Only', 'Only the team captain can register the team for a tournament.')],
-                ephemeral: true,
-            });
-        }
-
-        tournaments.registerTeam(tournamentId, team.id);
-        teams.setTournament(team.id, tournamentId);
-
-        const newCount = tournaments.getRegistrationCount(tournamentId);
-
-        return interaction.reply({
-            embeds: [successEmbed('Registered!', `**${team.name}** is registered for **${tournament.name}**!\n\n📊 Teams registered: ${newCount}/${tournament.max_teams}`)],
-            ephemeral: true,
-        });
-    }
-
-    // Multiple eligible teams — for now just register the first one
+    // Register the first eligible team
     const team = eligibleTeams[0];
-    if (team.captain_id !== interaction.user.id) {
-        return interaction.reply({
-            embeds: [errorEmbed('Captain Only', 'Only the team captain can register the team.')],
-            ephemeral: true,
-        });
-    }
-
     tournaments.registerTeam(tournamentId, team.id);
     teams.setTournament(team.id, tournamentId);
+
     const newCount = tournaments.getRegistrationCount(tournamentId);
 
-    await interaction.reply({
-        embeds: [successEmbed('Registered!', `**${team.name}** is registered for **${tournament.name}**!\n\n📊 Teams registered: ${newCount}/${tournament.max_teams}`)],
+    // Auto-close registration if full
+    if (newCount >= tournament.max_teams) {
+        tournaments.updateStatus(tournamentId, 'registration_closed');
+        // Update the original message to show registration closed
+        try {
+            await interaction.message.edit({
+                components: [], // Remove buttons
+            });
+            await interaction.channel.send({
+                content: `## 🔒 Registration Closed!\n**${tournament.name}** has reached **${tournament.max_teams}/${tournament.max_teams}** teams. Registration is now closed!`,
+            });
+        } catch (_) { }
+    }
+
+    return interaction.reply({
+        embeds: [successEmbed('Registered!', `**${team.name}** is registered for **${tournament.name}**!\n\n📊 Teams registered: ${newCount}/${tournament.max_teams}${newCount >= tournament.max_teams ? '\n🔒 **Registration is now CLOSED!**' : ''}`)],
         ephemeral: true,
     });
 });

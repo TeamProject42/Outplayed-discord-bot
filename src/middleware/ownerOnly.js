@@ -1,7 +1,8 @@
 const { auditLog } = require('../database/db');
+const { PermissionFlagsBits } = require('discord.js');
 
 /**
- * Validates that the interaction user is the guild owner.
+ * Validates that the interaction user is the guild owner or an admin.
  * Returns true if authorized, false if not (and sends ephemeral reply).
  */
 async function ownerOnly(interaction) {
@@ -16,9 +17,12 @@ async function ownerOnly(interaction) {
         await guild.fetch();
     }
 
-    if (interaction.user.id !== guild.ownerId) {
+    const isOwner = interaction.user.id === guild.ownerId;
+    const isAdmin = interaction.member.permissions.has(PermissionFlagsBits.Administrator);
+
+    if (!isOwner && !isAdmin) {
         await interaction.reply({
-            content: '⛔ **Access Denied** — Only the server owner can use this command.',
+            content: '⛔ **Access Denied** — Only the server owner or admins can use this command.',
             ephemeral: true,
         });
         return false;
