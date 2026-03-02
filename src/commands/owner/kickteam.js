@@ -78,6 +78,9 @@ module.exports = {
             } catch (_) { }
         }
 
+        // Delete the team and release all players
+        teamDb.delete(team.id);
+
         logOwnerAction(interaction.guild.id, interaction.user.id, 'KICK_TEAM', team.name, {
             teamId: team.id,
             tournamentCode: code,

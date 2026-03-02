@@ -42,6 +42,16 @@ module.exports = {
             });
         }
 
+        // Block if already in a team
+        const existingTeams = teams.getByPlayer(interaction.user.id);
+        if (existingTeams.length > 0) {
+            const currentTeam = existingTeams[0];
+            return interaction.reply({
+                embeds: [errorEmbed('Already in a Team', `You're already in **${currentTeam.name}**. Leave it first with \`/leaveteam\`.`)],
+                ephemeral: true,
+            });
+        }
+
         // If player is in matchmaking queue, auto-remove (mutual exclusivity)
         if (queue.isQueued(interaction.user.id)) {
             queue.remove(interaction.user.id);
@@ -225,16 +235,16 @@ selectHandler.register('team_kickselect_', async (interaction) => {
         try {
             const channel = await guild.channels.fetch(team.channel_id);
             if (channel) {
-                await channel.permissionOverwrites.delete(kickedId).catch(() => {});
+                await channel.permissionOverwrites.delete(kickedId).catch(() => { });
                 await channel.send({ content: `## 👢 Member Kicked\n<@${kickedId}> has been removed from the team by <@${interaction.user.id}>.` });
             }
-        } catch (_) {}
+        } catch (_) { }
     }
     if (team.voice_channel_id) {
         try {
             const vc = await guild.channels.fetch(team.voice_channel_id);
-            if (vc) await vc.permissionOverwrites.delete(kickedId).catch(() => {});
-        } catch (_) {}
+            if (vc) await vc.permissionOverwrites.delete(kickedId).catch(() => { });
+        } catch (_) { }
     }
 
     logger.info(`Member kicked: ${kickedId} from ${team.name} (${team.code}) by ${interaction.user.tag}`);
@@ -247,14 +257,14 @@ selectHandler.register('team_kickselect_', async (interaction) => {
         if (updatedTeam.channel_id) {
             try {
                 const ch = await guild.channels.fetch(updatedTeam.channel_id);
-                if (ch) setTimeout(() => ch.delete('Team empty').catch(() => {}), 5_000);
-            } catch (_) {}
+                if (ch) setTimeout(() => ch.delete('Team empty').catch(() => { }), 5_000);
+            } catch (_) { }
         }
         if (updatedTeam.voice_channel_id) {
             try {
                 const vc = await guild.channels.fetch(updatedTeam.voice_channel_id);
-                if (vc) setTimeout(() => vc.delete('Team empty').catch(() => {}), 5_000);
-            } catch (_) {}
+                if (vc) setTimeout(() => vc.delete('Team empty').catch(() => { }), 5_000);
+            } catch (_) { }
         }
         teams.delete(teamId);
         logger.info(`Team auto-disbanded (empty after kick): ${team.name} (${team.code})`);
@@ -292,17 +302,17 @@ buttonHandler.register('team_disband_', async (interaction) => {
             const channel = await guild.channels.fetch(team.channel_id);
             if (channel) {
                 await channel.send({ embeds: [errorEmbed('Team Disbanded', `**${team.name}** has been disbanded. This channel will be deleted in 10 seconds.`)] });
-                setTimeout(() => channel.delete('Team disbanded').catch(() => {}), 10_000);
+                setTimeout(() => channel.delete('Team disbanded').catch(() => { }), 10_000);
             }
-        } catch (_) {}
+        } catch (_) { }
     }
 
     // Delete voice channel
     if (team.voice_channel_id) {
         try {
             const vc = await guild.channels.fetch(team.voice_channel_id);
-            if (vc) setTimeout(() => vc.delete('Team disbanded').catch(() => {}), 10_000);
-        } catch (_) {}
+            if (vc) setTimeout(() => vc.delete('Team disbanded').catch(() => { }), 10_000);
+        } catch (_) { }
     }
 
     teams.delete(teamId);

@@ -41,10 +41,16 @@ module.exports = {
         }
 
         const existingTeams = teams.getByPlayer(interaction.user.id);
-        const alreadyInTeam = existingTeams.find(t => t.id === team.id);
-        if (alreadyInTeam) {
+        if (existingTeams.length > 0) {
+            const currentTeam = existingTeams[0];
+            if (currentTeam.id === team.id) {
+                return interaction.reply({
+                    embeds: [errorEmbed('Already a Member', `You're already in **${team.name}**.`)],
+                    ephemeral: true,
+                });
+            }
             return interaction.reply({
-                embeds: [errorEmbed('Already a Member', `You're already in **${team.name}**.`)],
+                embeds: [errorEmbed('Already in a Team', `You're already in **${currentTeam.name}**. Leave it first with \`/leaveteam\`.`)],
                 ephemeral: true,
             });
         }

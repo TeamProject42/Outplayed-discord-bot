@@ -36,7 +36,7 @@ module.exports = {
         const code = interaction.options.getString('code');
 
         if (code) {
-            team = playerTeams.find(t => t.code.toLowerCase() === code.toUpperCase().trim());
+            team = playerTeams.find(t => t.code.toUpperCase() === code.toUpperCase().trim());
             if (!team) {
                 return interaction.reply({
                     embeds: [errorEmbed('Not Found', `You're not in a team with code \`${code}\`.`)],
@@ -69,15 +69,15 @@ module.exports = {
                         const channel = await guild.channels.fetch(team.channel_id);
                         if (channel) {
                             await channel.send({ content: `## 🚪 Team Disbanded\n**${team.name}** has been disbanded because the captain left and no members remain. Deleting in 10s.` });
-                            setTimeout(() => channel.delete('Captain left, team disbanded').catch(() => {}), 10_000);
+                            setTimeout(() => channel.delete('Captain left, team disbanded').catch(() => { }), 10_000);
                         }
-                    } catch (_) {}
+                    } catch (_) { }
                 }
                 if (team.voice_channel_id) {
                     try {
                         const vc = await guild.channels.fetch(team.voice_channel_id);
-                        if (vc) setTimeout(() => vc.delete('Captain left, team disbanded').catch(() => {}), 10_000);
-                    } catch (_) {}
+                        if (vc) setTimeout(() => vc.delete('Captain left, team disbanded').catch(() => { }), 10_000);
+                    } catch (_) { }
                 }
 
                 teams.delete(team.id);
@@ -100,18 +100,18 @@ module.exports = {
                     try {
                         const channel = await guild.channels.fetch(team.channel_id);
                         if (channel) {
-                            await channel.permissionOverwrites.delete(interaction.user.id).catch(() => {});
+                            await channel.permissionOverwrites.delete(interaction.user.id).catch(() => { });
                             await channel.send({
                                 content: `## 🚪 Captain Left\n<@${interaction.user.id}> has left the team.\n\n👑 **<@${newCaptain.discord_id}> is now the new captain!**`,
                             });
                         }
-                    } catch (_) {}
+                    } catch (_) { }
                 }
                 if (team.voice_channel_id) {
                     try {
                         const vc = await guild.channels.fetch(team.voice_channel_id);
-                        if (vc) await vc.permissionOverwrites.delete(interaction.user.id).catch(() => {});
-                    } catch (_) {}
+                        if (vc) await vc.permissionOverwrites.delete(interaction.user.id).catch(() => { });
+                    } catch (_) { }
                 }
 
                 logger.info(`Captain left: ${interaction.user.tag} from ${team.name}. New captain: ${newCaptain.discord_id}`);
@@ -131,16 +131,16 @@ module.exports = {
                 try {
                     const channel = await guild.channels.fetch(team.channel_id);
                     if (channel) {
-                        await channel.permissionOverwrites.delete(interaction.user.id).catch(() => {});
+                        await channel.permissionOverwrites.delete(interaction.user.id).catch(() => { });
                         await channel.send({ content: `## 🚪 Member Left\n<@${interaction.user.id}> has left the team.` });
                     }
-                } catch (_) {}
+                } catch (_) { }
             }
             if (team.voice_channel_id) {
                 try {
                     const vc = await guild.channels.fetch(team.voice_channel_id);
-                    if (vc) await vc.permissionOverwrites.delete(interaction.user.id).catch(() => {});
-                } catch (_) {}
+                    if (vc) await vc.permissionOverwrites.delete(interaction.user.id).catch(() => { });
+                } catch (_) { }
             }
 
             logger.info(`Member left: ${interaction.user.tag} from ${team.name} (${team.code})`);
@@ -152,14 +152,14 @@ module.exports = {
                 if (updatedTeam?.channel_id) {
                     try {
                         const ch = await guild.channels.fetch(updatedTeam.channel_id);
-                        if (ch) setTimeout(() => ch.delete('Team empty').catch(() => {}), 5_000);
-                    } catch (_) {}
+                        if (ch) setTimeout(() => ch.delete('Team empty').catch(() => { }), 5_000);
+                    } catch (_) { }
                 }
                 if (updatedTeam?.voice_channel_id) {
                     try {
                         const vc = await guild.channels.fetch(updatedTeam.voice_channel_id);
-                        if (vc) setTimeout(() => vc.delete('Team empty').catch(() => {}), 5_000);
-                    } catch (_) {}
+                        if (vc) setTimeout(() => vc.delete('Team empty').catch(() => { }), 5_000);
+                    } catch (_) { }
                 }
                 teams.delete(team.id);
                 logger.info(`Team auto-disbanded (empty after leave): ${team.name} (${team.code})`);

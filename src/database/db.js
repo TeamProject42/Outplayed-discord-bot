@@ -76,6 +76,10 @@ const teams = {
         return getDb().prepare('SELECT * FROM teams WHERE id = ?').get(id);
     },
 
+    getAll() {
+        return getDb().prepare('SELECT * FROM teams ORDER BY created_at DESC').all();
+    },
+
     getByPlayer(playerId) {
         return getDb().prepare(
             `SELECT t.* FROM teams t
@@ -177,6 +181,12 @@ const tournaments = {
     getActive(guildId) {
         return getDb().prepare(
             "SELECT * FROM tournaments WHERE guild_id = ? AND status IN ('registration', 'registration_closed', 'active') ORDER BY created_at DESC"
+        ).all(guildId);
+    },
+
+    getPast(guildId) {
+        return getDb().prepare(
+            "SELECT * FROM tournaments WHERE guild_id = ? AND status IN ('completed', 'cancelled') ORDER BY created_at DESC"
         ).all(guildId);
     },
 
