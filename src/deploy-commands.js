@@ -1,7 +1,7 @@
 const { REST, Routes } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
-const { token, clientId, guildId } = require('./config');
+const { token, clientId } = require('./config');
 
 const commands = [];
 const commandFolders = fs.readdirSync(path.join(__dirname, 'commands'));
@@ -26,7 +26,7 @@ const rest = new REST({ version: '10' }).setToken(token);
         console.log(`🔄 Registering ${commands.length} slash commands...`);
 
         await rest.put(
-            Routes.applicationGuildCommands(clientId, guildId),
+            Routes.applicationCommands(clientId),
             { body: commands },
         );
 
