@@ -7,6 +7,7 @@ const {
     ModalBuilder,
     TextInputBuilder,
     TextInputStyle,
+    MessageFlags,
 } = require('discord.js');
 const { games } = require('../../config');
 const { users, gameProfiles } = require('../../database/supabase');
@@ -22,12 +23,13 @@ module.exports = {
         .setDescription('🎮 Create your Outplayed player profile (under 60 seconds!)'),
 
     async execute(interaction) {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
         // Check if player already exists
         const existing = await users.getByDiscordId(interaction.user.id);
         if (existing) {
-            return interaction.reply({
+            return interaction.editReply({
                 embeds: [errorEmbed('Already Registered', 'You already have a profile! Use `/editprofile` to make changes, or `/profile` to view it.')],
-                ephemeral: true,
             });
         }
 
@@ -48,10 +50,9 @@ module.exports = {
         }
         rows.push(row);
 
-        await interaction.reply({
+        await interaction.editReply({
             content: '## 🎮 Welcome to Outplayed!\nSelect your primary game to get started:',
             components: rows,
-            ephemeral: true,
         });
     },
 };
