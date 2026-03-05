@@ -1,138 +1,94 @@
 const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
-const { players, teams, queue } = require('../../database/db');
+const { users, gameProfiles, franchises } = require('../../database/supabase');
 const { successEmbed, errorEmbed, teamEmbed } = require('../../utils/embeds');
 const logger = require('../../utils/logger');
+const config = require('../../config');
 
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('jointeam')
-        .setDescription('🤝 Join a team using an invite code')
+        .setDescription('🤝 Join a team using a Franchise ID')
         .addStringOption(option =>
             option.setName('code')
-                .setDescription('The 6-character team invite code')
+                .setDescription('The Franchise UUID')
                 .setRequired(true)
-                .setMaxLength(10)
+        )
+        .addStringOption(option =>
+            option.setName('game')
+                .setDescription('Game for this roster')
+                .setRequired(true)
+                .addChoices(
+                    Object.keys(config.games).map(k => ({ name: config.games[k].name, value: k }))
+                )
         ),
 
     async execute(interaction) {
-        const player = players.get(interaction.user.id);
-        if (!player) {
-            return interaction.reply({
-                embeds: [errorEmbed('No Profile', 'Create a profile first with `/start`.')],
-                ephemeral: true,
-            });
-        }
-
-        const code = interaction.options.getString('code').toUpperCase().trim();
-        const team = teams.getByCode(code);
-
-        if (!team) {
-            return interaction.reply({
-                embeds: [errorEmbed('Invalid Code', `No team found with code \`${code}\`. Double-check and try again.`)],
-                ephemeral: true,
-            });
-        }
-
-        if (team.locked || team.current_size >= team.size) {
-            return interaction.reply({
-                embeds: [errorEmbed('Team Full', `**${team.name}** is already full or locked.`)],
-                ephemeral: true,
-            });
-        }
-
-        const existingTeams = teams.getByPlayer(interaction.user.id);
-        if (existingTeams.length > 0) {
-            const currentTeam = existingTeams[0];
-            if (currentTeam.id === team.id) {
+        try {
+            const player = await users.getByDiscordId(interaction.user.id);
+            if (!player) {
                 return interaction.reply({
-                    embeds: [errorEmbed('Already a Member', `You're already in **${team.name}**.`)],
+                    embeds: [errorEmbed('No Profile', 'Create a profile first with `/start`.')],
                     ephemeral: true,
                 });
             }
-            return interaction.reply({
-                embeds: [errorEmbed('Already in a Team', `You're already in **${currentTeam.name}**. Leave it first with \`/leaveteam\`.`)],
-                ephemeral: true,
+
+            const code = interaction.options.getString('code').trim();
+            const gameKey = interaction.options.getString('game');
+
+            const franchise = await franchises.getByUUID(code);
+            if (!franchise) {
+                return interaction.reply({
+                    embeds: [errorEmbed('Invalid Code', `No team found with Franchise ID \`${code}\`.\nDouble-check and try again.`)],
+                    ephemeral: true,
+                });
+            }
+
+            // Ensure player has a profile for this game
+            const gameTable = getMemberTableName(gameKey);
+            const userGameProfile = await gameProfiles.get(gameTable, player.UUID);
+
+            if (!userGameProfile) {
+                 return interaction.reply({
+                     embeds: [errorEmbed('No Game Profile', `You must have a ${config.games[gameKey].name} profile to join this roster.`)],
+                     ephemeral: true,
+                 });
+            }
+
+            await interaction.deferReply({ ephemeral: true });
+
+            // Proceed to join roster
+            await franchises.joinRoster(franchise.Franchise_UUID, player.UUID, gameKey, userGameProfile.Rank);
+
+            // Channel role granting logic (simplified to MVP scope text responses)
+            // (If the guild channel architecture was fully integrated with DB maps this would go here)
+            
+            logger.info(`Player joined team: ${interaction.user.tag} → ${franchise.Franchise_Name} (${code})`);
+
+            await interaction.editReply({
+                embeds: [
+                    successEmbed('Joined Team!', `You've successfully joined **${franchise.Franchise_Name}**'s ${config.games[gameKey].name} roster!`),
+                ],
             });
+
+        } catch (error) {
+            logger.error(`Error joining team: ${error.message}`);
+            
+            let msg = 'Could not join the team. Check console.';
+            if (error.message.includes('Roster is full')) msg = 'This roster is already full.';
+            if (error.message.includes('Roster not found')) msg = 'This Franchise does not have a roster for the selected game.';
+            if (error.code === '23505') msg = 'You are already in this team.'; // duplicate key value violates unique constraint
+
+            return interaction.editReply({ embeds: [errorEmbed('Join Failed', msg)] });
         }
-
-        // If player is in matchmaking queue, auto-remove (mutual exclusivity)
-        if (queue.isQueued(interaction.user.id)) {
-            queue.remove(interaction.user.id);
-        }
-
-        await interaction.deferReply({ ephemeral: true });
-
-        const guild = interaction.guild;
-
-        // Add member to DB
-        teams.addMember(team.id, interaction.user.id);
-        teams.incrementSize(team.id);
-
-        // Grant direct channel access (text + voice)
-        if (team.channel_id) {
-            try {
-                const channel = await guild.channels.fetch(team.channel_id);
-                if (channel) {
-                    await channel.permissionOverwrites.create(interaction.user.id, {
-                        ViewChannel: true,
-                        SendMessages: true,
-                    });
-                }
-            } catch (err) {
-                console.log(`⚠️ Could not grant text channel access: ${err.message}`);
-            }
-        }
-        if (team.voice_channel_id) {
-            try {
-                const vc = await guild.channels.fetch(team.voice_channel_id);
-                if (vc) {
-                    await vc.permissionOverwrites.create(interaction.user.id, {
-                        ViewChannel: true,
-                        Connect: true,
-                        Speak: true,
-                    });
-                }
-            } catch (err) {
-                console.log(`⚠️ Could not grant voice channel access: ${err.message}`);
-            }
-        }
-
-        // Check if team is now full
-        const updatedTeam = teams.getById(team.id);
-        if (updatedTeam.current_size >= updatedTeam.size) {
-            teams.lock(team.id);
-        }
-
-        const finalTeam = teams.getById(team.id);
-        const members = teams.getMembers(team.id);
-
-        // Announce in team channel
-        if (team.channel_id) {
-            try {
-                const channel = await guild.channels.fetch(team.channel_id);
-                if (channel) {
-                    await channel.send({
-                        content: `## 🎉 New Teammate!\n<@${interaction.user.id}> has joined the team!`,
-                        embeds: [teamEmbed(finalTeam, members)],
-                    });
-
-                    if (finalTeam.locked) {
-                        await channel.send({
-                            content: '## 🔒 Team Locked!\nAll spots are filled. Your team is ready for battle!',
-                        });
-                    }
-                }
-            } catch (_) { }
-        }
-
-        logger.info(`Player joined team: ${interaction.user.tag} → ${team.name} (${code})`);
-
-        const voiceInfo = finalTeam.voice_channel_id ? `\n🔊 Voice: <#${finalTeam.voice_channel_id}>` : '';
-
-        await interaction.editReply({
-            embeds: [
-                successEmbed('Joined Team!', `You've joined **${team.name}**!\n\n📢 Channel: <#${team.channel_id}>${voiceInfo}\n👥 Size: ${finalTeam.current_size}/${finalTeam.size}${finalTeam.locked ? '\n🔒 Team is now locked!' : ''}`),
-            ],
-        });
     },
 };
+
+function getMemberTableName(gameKey) {
+    switch(gameKey) {
+        case 'valo': return 'ValorantMember';
+        case 'bgmi': return 'BgmiMember';
+        case 'codm': return 'CODMobileMember';
+        case 'mlbb': return 'MobaLegendsMember';
+        default: return 'BgmiMember'; 
+    }
+}

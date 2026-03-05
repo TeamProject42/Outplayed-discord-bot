@@ -1,5 +1,6 @@
 const { EmbedBuilder } = require('discord.js');
 const { embedColor, botName } = require('../config');
+const { EMOJIS, STATUS } = require('../constants/messages');
 
 /**
  * Safely parse a date string into a Discord timestamp.
@@ -28,7 +29,7 @@ function formatStartTime(dateStr) {
 function successEmbed(title, description) {
     return new EmbedBuilder()
         .setColor(0x22C55E)
-        .setTitle(`✅ ${title}`)
+        .setTitle(`${EMOJIS.SUCCESS} ${title}`)
         .setDescription(description)
         .setFooter({ text: botName })
         .setTimestamp();
@@ -37,7 +38,7 @@ function successEmbed(title, description) {
 function errorEmbed(title, description) {
     return new EmbedBuilder()
         .setColor(0xEF4444)
-        .setTitle(`❌ ${title}`)
+        .setTitle(`${EMOJIS.ERROR} ${title}`)
         .setDescription(description)
         .setFooter({ text: botName })
         .setTimestamp();
@@ -46,7 +47,7 @@ function errorEmbed(title, description) {
 function infoEmbed(title, description = null) {
     const embed = new EmbedBuilder()
         .setColor(embedColor)
-        .setTitle(title)
+        .setTitle(`${EMOJIS.INFO} ${title}`)
         .setFooter({ text: botName })
         .setTimestamp();
 
@@ -55,46 +56,60 @@ function infoEmbed(title, description = null) {
 }
 
 function profileEmbed(player, user) {
-    return new EmbedBuilder()
+    const embed = new EmbedBuilder()
         .setColor(embedColor)
-        .setTitle(`🎮 ${user.displayName}'s Profile`)
-        .setThumbnail(user.displayAvatarURL({ dynamic: true }))
-        .addFields(
-            { name: '🎯 Game', value: player.game, inline: true },
-            { name: '🆔 Player ID', value: player.player_id, inline: true },
-            { name: '🏅 Rank', value: player.rank, inline: true },
-            { name: '🏆 Wins', value: `${player.wins}`, inline: true },
-            { name: '💀 Losses', value: `${player.losses}`, inline: true },
-            { name: '📊 W/L Ratio', value: player.losses > 0 ? (player.wins / player.losses).toFixed(2) : `${player.wins}.00`, inline: true },
+        .setTitle(`${EMOJIS.GAME} ${user.displayName}'s Profile`)
+        .setThumbnail(user.displayAvatarURL({ dynamic: true }));
+
+    if (player.Bio) {
+        embed.setDescription(`*"${player.Bio}"*`);
+    }
+
+    embed.addFields(
+            { name: `${EMOJIS.ID} Username`, value: player.Username || 'Not set', inline: true },
+            { name: `${EMOJIS.GLOBE} Region`, value: player.Region || 'Unknown', inline: true },
+            { name: `${EMOJIS.PIN} Status`, value: player.Account_Status || STATUS.ACTIVE, inline: true }
         )
-        .setFooter({ text: `${botName} • Joined` })
-        .setTimestamp(new Date(player.created_at));
+        .setFooter({ text: `${botName} • Joined` });
+
+    if (player.Created_At) {
+        embed.setTimestamp(new Date(player.Created_At));
+    } else {
+        embed.setTimestamp();
+    }
+        
+    return embed;
 }
 
 function tournamentEmbed(tournament) {
     const embed = new EmbedBuilder()
         .setColor(embedColor)
-        .setTitle(`🏆 ${tournament.name}`)
-        .setDescription('A new tournament is live! Register your team now.')
+        .setTitle(`${EMOJIS.TROPHY} ${tournament.Name}`)
+        .setDescription(tournament.Description || 'A new tournament is live! Register your team now.')
         .addFields(
-            { name: '🎮 Game', value: tournament.game, inline: true },
-            { name: '👥 Team Size', value: `${tournament.team_size}`, inline: true },
-            { name: '📋 Format', value: tournament.format.charAt(0).toUpperCase() + tournament.format.slice(1), inline: true },
-            { name: '🎟️ Max Teams', value: `${tournament.max_teams}`, inline: true },
-            { name: '📅 Start Time', value: formatStartTime(tournament.start_time), inline: true },
-            { name: '⏰ Check-in Window', value: `${tournament.checkin_window} min`, inline: true },
+            { name: `${EMOJIS.USERS} Team Slots`, value: `${tournament.Total_Slots || 'Unknown'}`, inline: true },
+            { name: `${EMOJIS.STATUS} Status`, value: tournament.Status ? tournament.Status.charAt(0).toUpperCase() + tournament.Status.slice(1) : STATUS.OPEN, inline: true },
+            { name: `${EMOJIS.START_DATE} Start Date`, value: formatStartTime(tournament.Start_Date), inline: true },
+            { name: `${EMOJIS.END_DATE} End Date`, value: formatStartTime(tournament.End_Date), inline: true },
+            { name: `${EMOJIS.BRACKET} Bracket`, value: tournament.Bracket_Type || 'Single Elimination', inline: true }
         )
-        .setFooter({ text: `${botName} • Tournament ID: ${tournament.tournament_code}` })
-        .setTimestamp();
+        .setFooter({ text: `${botName} • ID: ${tournament.Tournament_UUID}` });
 
-    if (tournament.rank_restriction) {
-        embed.addFields({ name: '🏅 Rank Restriction', value: tournament.rank_restriction, inline: true });
+    if (tournament.Created_At) {
+        embed.setTimestamp(new Date(tournament.Created_At));
+    } else {
+        embed.setTimestamp();
     }
-    if (tournament.entry_fee) {
-        embed.addFields({ name: '💰 Entry Fee', value: tournament.entry_fee, inline: true });
+
+    if (tournament.Entry_Fee) {
+        embed.addFields({ name: `${EMOJIS.MONEY} Entry Fee`, value: tournament.Entry_Fee, inline: true });
     }
-    if (tournament.prize_pool) {
-        embed.addFields({ name: '🏅 Prize Pool', value: tournament.prize_pool, inline: true });
+    if (tournament.Prize_Pool) {
+        embed.addFields({ name: `${EMOJIS.MEDAL} Prize Pool`, value: tournament.Prize_Pool, inline: true });
+    }
+
+    if (tournament.Banner_Path) {
+        embed.setImage(tournament.Banner_Path);
     }
 
     return embed;
@@ -103,12 +118,12 @@ function tournamentEmbed(tournament) {
 function matchEmbed(match, team1, team2, round) {
     return new EmbedBuilder()
         .setColor(embedColor)
-        .setTitle(`⚔️ Match — Round ${round}`)
+        .setTitle(`${EMOJIS.SWORDS} Match — Round ${round}`)
         .setDescription(`**${team1.name}** vs **${team2.name}**`)
         .addFields(
-            { name: '🔴 Team 1', value: team1.name, inline: true },
-            { name: '🔵 Team 2', value: team2.name, inline: true },
-            { name: '📋 Status', value: match.status.charAt(0).toUpperCase() + match.status.slice(1), inline: true },
+            { name: `${EMOJIS.RED_TEAM} Team 1`, value: team1.name, inline: true },
+            { name: `${EMOJIS.BLUE_TEAM} Team 2`, value: team2.name, inline: true },
+            { name: `${EMOJIS.STATUS} Status`, value: match.status.charAt(0).toUpperCase() + match.status.slice(1), inline: true },
         )
         .setFooter({ text: `${botName} • Match #${match.match_number}` })
         .setTimestamp();
@@ -116,17 +131,17 @@ function matchEmbed(match, team1, team2, round) {
 
 function teamEmbed(team, members) {
     const memberList = members.map((m, i) =>
-        `${i === 0 ? '👑' : '👤'} <@${m.discord_id}> — ${m.rank}`
+        `${i === 0 ? EMOJIS.CROWN : EMOJIS.USER} <@${m.discord_id}> — ${m.rank}`
     ).join('\n');
 
     return new EmbedBuilder()
         .setColor(embedColor)
-        .setTitle(`🛡️ Team: ${team.name}`)
+        .setTitle(`${EMOJIS.TEAM} Team: ${team.name}`)
         .addFields(
-            { name: '📋 Team Code', value: `\`${team.code}\``, inline: true },
-            { name: '👥 Size', value: `${team.current_size}/${team.size}`, inline: true },
-            { name: '🔒 Status', value: team.locked ? 'Locked' : 'Open', inline: true },
-            { name: '📜 Roster', value: memberList || 'No members' },
+            { name: `${EMOJIS.STATUS} Team Code`, value: `\`${team.code}\``, inline: true },
+            { name: `${EMOJIS.USERS} Size`, value: `${team.current_size}/${team.size}`, inline: true },
+            { name: `${EMOJIS.LOCK} Status`, value: team.locked ? STATUS.LOCKED : STATUS.OPEN, inline: true },
+            { name: `${EMOJIS.STATUS} Roster`, value: memberList || 'No members' },
         )
         .setFooter({ text: botName })
         .setTimestamp();

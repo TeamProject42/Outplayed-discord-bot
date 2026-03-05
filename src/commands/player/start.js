@@ -9,7 +9,7 @@ const {
     TextInputStyle,
 } = require('discord.js');
 const { games } = require('../../config');
-const { players } = require('../../database/db');
+const { users, gameProfiles } = require('../../database/supabase');
 const { successEmbed, errorEmbed, profileEmbed } = require('../../utils/embeds');
 const logger = require('../../utils/logger');
 const buttonHandler = require('../../interactions/buttons');
@@ -23,7 +23,7 @@ module.exports = {
 
     async execute(interaction) {
         // Check if player already exists
-        const existing = players.get(interaction.user.id);
+        const existing = await users.getByDiscordId(interaction.user.id);
         if (existing) {
             return interaction.reply({
                 embeds: [errorEmbed('Already Registered', 'You already have a profile! Use `/editprofile` to make changes, or `/profile` to view it.')],
@@ -130,20 +130,75 @@ selectHandler.register('start_rank_', async (interaction) => {
     const rank = interaction.values[0];
     const game = games[gameKey];
 
-    // Create player profile
-    players.create(interaction.user.id, game.name, playerId, rank);
+        // Create player profile
+    try {
+        // 1. Create or get basic User
+        await users.createOrUpdate(interaction.user.id, {
+            Username: interaction.user.username,
+            Registration_Status: 'registered'
+        });
 
-    const player = players.get(interaction.user.id);
-    const embed = profileEmbed(player, interaction.user);
+        // 2. Get the player UUID
+        const userRec = await users.getByDiscordId(interaction.user.id);
+        const uuid = userRec.UUID;
 
-    logger.info(`Player registered: ${interaction.user.tag} → ${game.name} (${rank})`);
+        // 3. Insert game profile
+        const gameTable = getGameTableName(gameKey);
+        const gameIdField = 'Game_ID'; 
+        const inGameNameField = 'In_Game_Name'; 
 
-    await interaction.update({
-        content: null,
-        embeds: [
-            successEmbed('Profile Created!', `Welcome to Outplayed, **${interaction.user.displayName}**! Your profile is ready.`),
-            embed,
-        ],
-        components: [],
-    });
+        await gameProfiles.createOrUpdate(gameTable, uuid, {
+            [inGameNameField]: playerId,
+            [gameIdField]: playerId,
+            Rank: rank,
+            Status: 'active'
+        });
+
+        // 4. Role Detection and Assignment (MVP Task)
+        let roleMsg = '';
+        if (interaction.guild && interaction.member) {
+            const playerRole = interaction.guild.roles.cache.find(r => r.name.toLowerCase() === 'player');
+            if (playerRole) {
+                if (!interaction.member.roles.cache.has(playerRole.id)) {
+                    try {
+                        await interaction.member.roles.add(playerRole);
+                        roleMsg = `\n\n🎯 You've been granted the **@Player** role!`;
+                    } catch (roleErr) {
+                        logger.warn(`Could not assign Player role: ${roleErr.message}`);
+                    }
+                } else {
+                    roleMsg = `\n\n🎯 You already have the **@Player** role!`;
+                }
+            }
+        }
+        
+        logger.info(`Player registered in Supabase: ${interaction.user.tag} → ${game.name} (${rank})`);
+
+        await interaction.update({
+            content: null,
+            embeds: [
+                successEmbed('Profile Created!', `Welcome to Outplayed, **${interaction.user.displayName}**! Your profile is ready.${roleMsg}`),
+            ],
+            components: [],
+        });
+    } catch (error) {
+        logger.error(`Error saving profile: ${error.message}`);
+        await interaction.update({
+            content: '❌ An error occurred saving your profile to the database.',
+            components: [],
+            embeds: []
+        });
+    }
 });
+
+function getGameTableName(gameKey) {
+    // Map internal config keys to Supabase table names
+    switch(gameKey) {
+        case 'valo': return 'ValorantMember';
+        case 'bgmi': return 'BgmiMember';
+        case 'codm': return 'CODMobileMember';
+        case 'mlbb': return 'MobaLegendsMember';
+        // Add others as needed from config.js
+        default: return 'BgmiMember'; // fallback
+    }
+}

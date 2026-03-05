@@ -8,10 +8,14 @@
     "dev": "node --watch src/index.js",
     "deploy": "node src/deploy-commands.js"
   },
-  "keywords": ["discord", "tournament", "esports"],
+  "keywords": [
+    "discord",
+    "tournament",
+    "esports"
+  ],
   "license": "ISC",
   "dependencies": {
-    "better-sqlite3": "^11.7.0",
+    "@supabase/supabase-js": "^2.98.0",
     "discord.js": "^14.16.0",
     "dotenv": "^16.4.0",
     "express": "^4.21.0",

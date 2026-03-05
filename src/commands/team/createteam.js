@@ -8,8 +8,7 @@ const {
     PermissionFlagsBits,
 } = require('discord.js');
 const config = require('../../config');
-const { players, teams, queue } = require('../../database/db');
-const { generateTeamCode } = require('../../utils/codeGenerator');
+const { users, franchises, gameProfiles, supabase } = require('../../database/supabase');
 const { successEmbed, errorEmbed, teamEmbed } = require('../../utils/embeds');
 const logger = require('../../utils/logger');
 const buttonHandler = require('../../interactions/buttons');
@@ -18,12 +17,20 @@ const selectHandler = require('../../interactions/selectMenus');
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('createteam')
-        .setDescription('🛡️ Create a new team')
+        .setDescription('🛡️ Create a new team (Franchise & Roster)')
         .addStringOption(option =>
             option.setName('name')
                 .setDescription('Your team name')
                 .setRequired(true)
                 .setMaxLength(32)
+        )
+        .addStringOption(option =>
+            option.setName('game')
+                .setDescription('Game for this roster')
+                .setRequired(true)
+                .addChoices(
+                    Object.keys(config.games).map(k => ({ name: config.games[k].name, value: k }))
+                )
         )
         .addIntegerOption(option =>
             option.setName('size')
@@ -34,133 +41,121 @@ module.exports = {
         ),
 
     async execute(interaction) {
-        const player = players.get(interaction.user.id);
-        if (!player) {
-            return interaction.reply({
-                embeds: [errorEmbed('No Profile', 'Create a profile first with `/start`.')],
-                ephemeral: true,
-            });
-        }
-
-        // Block if already in a team
-        const existingTeams = teams.getByPlayer(interaction.user.id);
-        if (existingTeams.length > 0) {
-            const currentTeam = existingTeams[0];
-            return interaction.reply({
-                embeds: [errorEmbed('Already in a Team', `You're already in **${currentTeam.name}**. Leave it first with \`/leaveteam\`.`)],
-                ephemeral: true,
-            });
-        }
-
-        // If player is in matchmaking queue, auto-remove (mutual exclusivity)
-        if (queue.isQueued(interaction.user.id)) {
-            queue.remove(interaction.user.id);
-        }
-
-        const teamName = interaction.options.getString('name');
-        const size = interaction.options.getInteger('size');
-
-        await interaction.deferReply({ ephemeral: true });
-
-        const guild = interaction.guild;
-        const code = generateTeamCode();
-
-        // Get player's game for category
-        const gameKey = Object.keys(config.games).find(k => config.games[k].name === player.game);
-        const game = gameKey ? config.games[gameKey] : null;
-
-        // Create team in DB (creator is always the captain)
-        const result = teams.create(code, teamName, interaction.user.id, size);
-        const teamId = result.lastInsertRowid;
-        teams.addMember(teamId, interaction.user.id);
-
-        let textChannel = null;
-        let voiceChannel = null;
-        let category = null;
-
         try {
-            // Find or create game-specific category
-            if (game) {
-                category = guild.channels.cache.find(
+            const player = await users.getByDiscordId(interaction.user.id);
+            if (!player) {
+                return interaction.reply({
+                    embeds: [errorEmbed('No Profile', 'Create a profile first with `/start`.')],
+                    ephemeral: true,
+                });
+            }
+
+            const teamName = interaction.options.getString('name');
+            const gameKey = interaction.options.getString('game');
+            const size = interaction.options.getInteger('size');
+
+            // Find game definition
+            const game = config.games[gameKey];
+            if (!game) {
+                 return interaction.reply({ content: 'Invalid game selected.', ephemeral: true });
+            }
+
+            await interaction.deferReply({ ephemeral: true });
+
+            // Ensure player has a game profile for this game to be leader
+            const memberTable = getMemberTableName(gameKey);
+            const userGameProfile = await gameProfiles.get(memberTable, player.UUID);
+            
+            if (!userGameProfile) {
+                 return interaction.editReply({
+                     embeds: [errorEmbed('No Game Profile', `You must have a ${game.name} profile to create a team for it. Check \`/start\`.`)],
+                 });
+            }
+
+            // Create franchise and roster
+            // Our helper `franchises.create` creates the Franchise and Roster together
+            const { franchise, roster } = await franchises.create(player.UUID, teamName, gameKey, {
+                Member_Size: size,
+                Roster_UUID: `rost-${Date.now()}` // Basic generator
+            });
+
+            // Make the user an owner
+            await supabase.from('User').update({ Is_Owner: true }).eq('UUID', player.UUID);
+
+            // Discord Channel Mapping (Optional MVP feature, simplified)
+            const guild = interaction.guild;
+            let textChannel = null;
+            let voiceChannel = null;
+            
+            try {
+                // Determine Category
+                let category = guild.channels.cache.find(
                     c => c.type === ChannelType.GuildCategory && c.name === `${game.emoji} ${game.name}`
                 );
                 if (!category) {
-                    category = await guild.channels.create({
-                        name: `${game.emoji} ${game.name}`,
-                        type: ChannelType.GuildCategory,
-                        reason: `Outplayed game category for ${game.name}`,
-                    });
+                    category = await guild.channels.create({ name: `${game.emoji} ${game.name}`, type: ChannelType.GuildCategory });
                 }
+
+                const permissionOverwrites = [
+                    { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+                    { id: interaction.client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak] },
+                    { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak] },
+                ];
+
+                textChannel = await guild.channels.create({
+                    name: `team-${teamName.toLowerCase().replace(/\s+/g, '-')}`,
+                    type: ChannelType.GuildText,
+                    parent: category?.id,
+                    permissionOverwrites
+                });
+
+                voiceChannel = await guild.channels.create({
+                    name: `🔊 ${teamName}`,
+                    type: ChannelType.GuildVoice,
+                    parent: category?.id,
+                    permissionOverwrites
+                });
+            } catch (err) {
+                logger.error(`Could not create channels: ${err.message}`);
             }
 
-            const permissionOverwrites = [
-                { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-                { id: interaction.client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak] },
-                { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak] },
-            ];
+            logger.info(`Team created: ${teamName} by ${interaction.user.tag}`);
 
-            // Create text channel under game category
-            textChannel = await guild.channels.create({
-                name: `team-${teamName.toLowerCase().replace(/\s+/g, '-')}`,
-                type: ChannelType.GuildText,
-                parent: category?.id || null,
-                permissionOverwrites,
-                reason: `Outplayed team channel for ${teamName}`,
-            });
+            // Embed payload
+            const replyEmbed = successEmbed('Team Created!', `**${teamName}** (${game.name}) is ready!`)
+                .addFields(
+                    { name: '👥 Size', value: `1/${size}`, inline: true },
+                    { name: 'Franchise ID', value: `\`${franchise.Franchise_UUID}\``, inline: false }
+                );
 
-            // Create voice channel under game category
-            voiceChannel = await guild.channels.create({
-                name: `🔊 ${teamName}`,
-                type: ChannelType.GuildVoice,
-                parent: category?.id || null,
-                permissionOverwrites,
-                reason: `Outplayed team voice channel for ${teamName}`,
-            });
+            if (textChannel) replyEmbed.addFields({ name: '📢 Text Channel', value: `<#${textChannel.id}>`, inline: true });
+            if (voiceChannel) replyEmbed.addFields({ name: '🔊 Voice Channel', value: `<#${voiceChannel.id}>`, inline: true });
 
-            teams.updateChannel(teamId, textChannel.id, voiceChannel.id, category?.id || null);
+            await interaction.editReply({ embeds: [replyEmbed] });
 
-            const team = teams.getById(teamId);
-            const members = teams.getMembers(teamId);
+            if (textChannel) {
+                 await textChannel.send(`## 🛡️ Welcome to **${teamName}**!\nInvite players using the Franchise ID: \`${franchise.Franchise_UUID}\``);
+            }
 
-            await textChannel.send({
-                embeds: [teamEmbed(team, members)],
-                content: `## 🛡️ Welcome to **${teamName}**!\n\nShare this code for others to join:\n# \`${code}\`\n\nThey can join with: \`/jointeam ${code}\``,
-            });
-
-            // Captain controls (server owner also gets access)
-            const captainRow = new ActionRowBuilder().addComponents(
-                new ButtonBuilder()
-                    .setCustomId(`team_kick_${teamId}_${interaction.user.id}`)
-                    .setLabel('Kick Member')
-                    .setStyle(ButtonStyle.Secondary)
-                    .setEmoji('👢'),
-                new ButtonBuilder()
-                    .setCustomId(`team_disband_${teamId}_${interaction.user.id}`)
-                    .setLabel('Disband Team')
-                    .setStyle(ButtonStyle.Danger)
-                    .setEmoji('💣'),
-            );
-
-            await textChannel.send({
-                content: '**👑 Captain Controls** *(Server Owner can also use these)*:',
-                components: [captainRow],
-            });
-        } catch (err) {
-            console.log(`⚠️ Could not create channels for team ${teamName}: ${err.message}. Team created without channels.`);
+        } catch (error) {
+            logger.error(`Error creating team: ${error.message}`);
+            if (error.code === '23505') {
+                return interaction.editReply({ embeds: [errorEmbed('Failed', 'A team with this exact name already exists.')] });
+            }
+            return interaction.editReply({ embeds: [errorEmbed('Database Error', 'Could not create the team. Check console.')] });
         }
-
-        logger.info(`Team created: ${teamName} (${code}) by ${interaction.user.tag}`);
-
-        const channelInfo = textChannel ? `\n📢 **Text Channel:** <#${textChannel.id}>` : '\n⚠️ *Could not create channels — bot needs Manage Channels permission*';
-        const voiceInfo = voiceChannel ? `\n🔊 **Voice Channel:** <#${voiceChannel.id}>` : '';
-
-        await interaction.editReply({
-            embeds: [
-                successEmbed('Team Created!', `**${teamName}** is ready!\n\n📋 **Team Code:** \`${code}\`${channelInfo}${voiceInfo}\n👥 **Size:** 1/${size}\n\nShare the code with your teammates!`),
-            ],
-        });
     },
 };
+
+function getMemberTableName(gameKey) {
+    switch(gameKey) {
+        case 'valo': return 'ValorantMember';
+        case 'bgmi': return 'BgmiMember';
+        case 'codm': return 'CODMobileMember';
+        case 'mlbb': return 'MobaLegendsMember';
+        default: return 'BgmiMember'; 
+    }
+}
 
 // ─── Kick Member Button ──────────────────────────────────────
 buttonHandler.register('team_kick_', async (interaction) => {

@@ -1,7 +1,5 @@
-const { auditLog } = require('../database/db');
-
 /**
- * Logs an action to the audit_log table and console.
+ * Logs an action to the console for MVP instead of SQLite.
  */
 function log(guildId, actorId, action, target = null, details = null) {
     const timestamp = new Date().toISOString();
@@ -9,10 +7,8 @@ function log(guildId, actorId, action, target = null, details = null) {
     // Console output
     const detailStr = details ? (typeof details === 'object' ? JSON.stringify(details) : details) : '';
     console.log(`[${timestamp}] [${action}] Actor: ${actorId} | Target: ${target || 'N/A'} | ${detailStr}`);
-
-    // Database
-    auditLog.log(guildId, actorId, action, target, details);
 }
+
 
 /**
  * Simple console info logger (no DB write).

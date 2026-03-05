@@ -1,4 +1,3 @@
-const { auditLog } = require('../database/db');
 const { PermissionFlagsBits } = require('discord.js');
 
 /**
@@ -31,11 +30,8 @@ async function ownerOnly(interaction) {
     return true;
 }
 
-/**
- * Logs an owner action to the audit log.
- */
 function logOwnerAction(guildId, actorId, action, target = null, details = null) {
-    auditLog.log(guildId, actorId, action, target, details);
+    console.log(`[OWNER ACTION] Guild: ${guildId} | Actor: ${actorId} | Action: ${action}`);
 }
 
 module.exports = { ownerOnly, logOwnerAction };
