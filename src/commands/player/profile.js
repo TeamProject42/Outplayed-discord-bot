@@ -13,6 +13,7 @@ module.exports = {
         ),
 
     async execute(interaction) {
+        await interaction.deferReply();
         const targetUser = interaction.options.getUser('user') || interaction.user;
         
         try {
@@ -20,41 +21,34 @@ module.exports = {
 
             if (!player) {
                 const isOther = targetUser.id !== interaction.user.id;
-                return interaction.reply({
+                return interaction.editReply({
                     embeds: [errorEmbed(
                         'No Profile Found',
                         isOther
                             ? `**${targetUser.displayName}** hasn't created a profile yet.`
                             : 'You don\'t have a profile yet! Use `/start` to create one.',
                     )],
-                    ephemeral: true,
                 });
             }
 
-            // Fetch linked game profiles
             let linkedGamesCount = 0;
-            // E.g., BGMI
             const bgmiProfile = await gameProfiles.get('BgmiMember', player.UUID);
             if (bgmiProfile) linkedGamesCount++;
             
-            // E.g., Valorant
             const valoProfile = await gameProfiles.get('ValorantMember', player.UUID);
             if (valoProfile) linkedGamesCount++;
 
-            // Get team history (Franchises owned)
             let ownedFranchises = [];
             if (player.Is_Owner) {
                 ownedFranchises = await franchises.getByOwner(player.UUID);
             }
 
-            // We adapt profileEmbed because it used to take my simple 'players' schema
             const embed = profileEmbed(player, targetUser);
             
             if (linkedGamesCount > 0) {
                  embed.addFields({ name: '🎮 Connected Games', value: `${linkedGamesCount} profiles`, inline: true });
             }
 
-            // Add team history
             if (ownedFranchises.length > 0) {
                 const teamList = ownedFranchises.map(t =>
                     `🛡️ **${t.Franchise_Name}**`
@@ -62,13 +56,12 @@ module.exports = {
                 embed.addFields({ name: '📜 Owned Franchises', value: teamList });
             }
 
-            await interaction.reply({ embeds: [embed] });
+            await interaction.editReply({ embeds: [embed] });
 
         } catch (error) {
             console.error('Error fetching profile:', error);
-            await interaction.reply({
+            await interaction.editReply({
                 embeds: [errorEmbed('Database Error', 'Could not load the profile from the database.')],
-                ephemeral: true,
             });
         }
     },
