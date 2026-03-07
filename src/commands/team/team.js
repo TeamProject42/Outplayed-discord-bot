@@ -6,12 +6,15 @@ const {
     EmbedBuilder,
     PermissionFlagsBits,
     ChannelType,
+    MessageFlags,
 } = require('discord.js');
 const { supabase } = require('../../database/supabase');
 const { ensureRegistered } = require('../../middleware/auth');
 const { successEmbed, errorEmbed, infoEmbed } = require('../../utils/embeds');
 const { getGame, getGameChoices } = require('../../utils/gameConstants');
-const { generateUUID } = require('../../utils/helpers');
+const { generateUUID, getPublicUrl } = require('../../utils/helpers');
+const { handleCommandError } = require('../../utils/errorHandler');
+const { ERRORS, TITLES } = require('../../utils/constants');
 const config = require('../../config');
 const logger = require('../../utils/logger');
 
@@ -62,76 +65,80 @@ module.exports = {
                 .setDescription('View team/franchise profile')),
 
     async execute(interaction) {
-        const sub = interaction.options.getSubcommand();
+        try {
+            const sub = interaction.options.getSubcommand();
 
-        switch (sub) {
-            case 'create': return handleCreate(interaction);
-            case 'invite': return handleInvite(interaction);
-            case 'leave': return handleLeave(interaction);
-            case 'remove': return handleRemove(interaction);
-            case 'transfer': return handleTransfer(interaction);
-            case 'roster': return handleRoster(interaction);
-            case 'profile': return handleProfile(interaction);
+            switch (sub) {
+                case 'create': return await handleCreate(interaction);
+                case 'invite': return await handleInvite(interaction);
+                case 'leave': return await handleLeave(interaction);
+                case 'remove': return await handleRemove(interaction);
+                case 'transfer': return await handleTransfer(interaction);
+                case 'roster': return await handleRoster(interaction);
+                case 'profile': return await handleProfile(interaction);
+            }
+        } catch (error) {
+            await handleCommandError(interaction, error);
         }
     },
 };
 
 // ---------- CREATE ----------
 async function handleCreate(interaction) {
-    const user = await ensureRegistered(interaction);
-    if (!user) return;
+    try {
+        const user = await ensureRegistered(interaction);
+        if (!user) return;
 
-    await interaction.deferReply({ ephemeral: true });
+        await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
-    const teamName = interaction.options.getString('name');
-    const gameKey = interaction.options.getString('game');
-    const game = getGame(gameKey);
+        const teamName = interaction.options.getString('name');
+        const gameKey = interaction.options.getString('game');
+        const game = getGame(gameKey);
 
-    // Check if user already owns a franchise
-    if (user.Is_Owner) {
-        const { data: existing } = await supabase
+        // Check if user already owns a franchise
+        if (user.Is_Owner) {
+            const { data: existing } = await supabase
+                .from('Franchise')
+                .select('Franchise_Name')
+                .eq('Owner_ID', user.UUID)
+                .single();
+
+            if (existing) {
+                return interaction.editReply({
+                    embeds: [errorEmbed(TITLES.ERROR, `You already own **${existing.Franchise_Name}**. You can only own one franchise.`)],
+                });
+            }
+        }
+
+        // Check if team name is taken
+        const { data: nameTaken } = await supabase
             .from('Franchise')
             .select('Franchise_Name')
-            .eq('Owner_ID', user.UUID)
+            .eq('Franchise_Name', teamName)
             .single();
 
-        if (existing) {
+        if (nameTaken) {
             return interaction.editReply({
-                embeds: [errorEmbed('Already Own a Team', `You already own **${existing.Franchise_Name}**. You can only own one franchise.`)],
+                embeds: [errorEmbed(TITLES.ERROR, `A team named **${teamName}** already exists. Please choose another name.`)],
             });
         }
-    }
 
-    // Check if team name is taken
-    const { data: nameTaken } = await supabase
-        .from('Franchise')
-        .select('Franchise_Name')
-        .eq('Franchise_Name', teamName)
-        .single();
+        // Check if user has a game profile for this game
+        const { data: gameProfile } = await supabase
+            .from(game.memberTable)
+            .select('User_UUID')
+            .eq('User_UUID', user.UUID)
+            .single();
 
-    if (nameTaken) {
-        return interaction.editReply({
-            embeds: [errorEmbed('Name Taken', `A team named **${teamName}** already exists. Please choose another name.`)],
-        });
-    }
+        if (!gameProfile) {
+            return interaction.editReply({
+                embeds: [errorEmbed(TITLES.ERROR, `You need a **${game.name}** profile first.\nUse \`/games add ${gameKey}\` to create one.`)],
+            });
+        }
 
-    // Check if user has a game profile for this game
-    const { data: gameProfile } = await supabase
-        .from(game.memberTable)
-        .select('User_UUID')
-        .eq('User_UUID', user.UUID)
-        .single();
+        const franchiseUUID = generateUUID('fra-');
+        const rosterUUID = generateUUID('ros-');
 
-    if (!gameProfile) {
-        return interaction.editReply({
-            embeds: [errorEmbed('No Game Profile', `You need a **${game.name}** profile first.\nUse \`/games add ${gameKey}\` to create one.`)],
-        });
-    }
-
-    const franchiseUUID = generateUUID('fra-');
-    const rosterUUID = generateUUID('ros-');
-
-    try {
         // Create Franchise
         const { error: franError } = await supabase
             .from('Franchise')
@@ -212,533 +219,551 @@ async function handleCreate(interaction) {
         }
 
         return interaction.editReply({
-            embeds: [successEmbed('Team Created! 🎉', `**${teamName}** has been created!\n\n**Game:** ${game.emoji} ${game.name}\n**Franchise ID:** \`${franchiseUUID}\`\n**Roster ID:** \`${rosterUUID}\`\n${channelId ? `**Channel:** <#${channelId}>` : ''}\n\nInvite players with \`/team invite @player ${gameKey}\``)],
+            embeds: [successEmbed(TITLES.SUCCESS, `**${teamName}** has been created!\n\n**Game:** ${game.emoji} ${game.name}\n**Franchise ID:** \`${franchiseUUID}\`\n**Roster ID:** \`${rosterUUID}\`\n${channelId ? `**Channel:** <#${channelId}>` : ''}\n\nInvite players with \`/team invite @player ${gameKey}\``)],
         });
 
     } catch (err) {
-        logger.error('Team creation error:', err);
-        return interaction.editReply({
-            embeds: [errorEmbed('Creation Failed', `Could not create team: ${err.message}`)],
-        });
+        await handleCommandError(interaction, err);
     }
 }
 
 // ---------- INVITE ----------
 async function handleInvite(interaction) {
-    const user = await ensureRegistered(interaction);
-    if (!user) return;
+    try {
+        const user = await ensureRegistered(interaction);
+        if (!user) return;
 
-    await interaction.deferReply({ ephemeral: true });
+        await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
-    const targetDiscordUser = interaction.options.getUser('player');
-    const gameKey = interaction.options.getString('game');
-    const game = getGame(gameKey);
+        const targetDiscordUser = interaction.options.getUser('player');
+        const gameKey = interaction.options.getString('game');
+        const game = getGame(gameKey);
 
-    // Get franchise owned by user
-    const { data: franchise } = await supabase
-        .from('Franchise')
-        .select('Franchise_UUID, Franchise_Name')
-        .eq('Owner_ID', user.UUID)
-        .single();
+        // Get franchise owned by user
+        const { data: franchise } = await supabase
+            .from('Franchise')
+            .select('Franchise_UUID, Franchise_Name')
+            .eq('Owner_ID', user.UUID)
+            .single();
 
-    if (!franchise) {
-        return interaction.editReply({
-            embeds: [errorEmbed('No Team', 'You don\'t own a team. Create one with `/team create`.')],
-        });
-    }
+        if (!franchise) {
+            return interaction.editReply({
+                embeds: [errorEmbed(TITLES.ERROR, ERRORS.TEAM_REQUIRED)],
+            });
+        }
 
-    // Get roster
-    const { data: roster } = await supabase
-        .from(game.rosterTable)
-        .select('Roster_UUID, Member_Size')
-        .eq('Franchise_UUID', franchise.Franchise_UUID)
-        .single();
+        // Get roster
+        const { data: roster } = await supabase
+            .from(game.rosterTable)
+            .select('Roster_UUID, Member_Size')
+            .eq('Franchise_UUID', franchise.Franchise_UUID)
+            .single();
 
-    if (!roster) {
-        return interaction.editReply({
-            embeds: [errorEmbed('No Roster', `Your team doesn't have a **${game.name}** roster.`)],
-        });
-    }
+        if (!roster) {
+            return interaction.editReply({
+                embeds: [errorEmbed(TITLES.ERROR, `Your team doesn't have a **${game.name}** roster.`)],
+            });
+        }
 
-    // Check if target user is registered
-    const { data: targetUser } = await supabase
-        .from('User')
-        .select('UUID, Name')
-        .eq('PWA_Notification_Subscription', targetDiscordUser.id)
-        .single();
+        // Check if target user is registered
+        const { data: targetUser } = await supabase
+            .from('User')
+            .select('UUID, Name')
+            .eq('Discord_ID', targetDiscordUser.id)
+            .single();
 
-    if (!targetUser) {
-        return interaction.editReply({
-            embeds: [errorEmbed('Not Registered', `${targetDiscordUser.tag} hasn't registered on Outplayed yet.`)],
-        });
-    }
+        if (!targetUser) {
+            return interaction.editReply({
+                embeds: [errorEmbed(TITLES.NOT_FOUND, `${targetDiscordUser.tag} hasn't registered on Outplayed yet.`)],
+            });
+        }
 
-    // Check if target has game profile
-    const { data: targetGameProfile } = await supabase
-        .from(game.memberTable)
-        .select('User_UUID, Roster_UUID')
-        .eq('User_UUID', targetUser.UUID)
-        .single();
+        // Check if target has game profile
+        const { data: targetGameProfile } = await supabase
+            .from(game.memberTable)
+            .select('User_UUID, Roster_UUID')
+            .eq('User_UUID', targetUser.UUID)
+            .single();
 
-    if (!targetGameProfile) {
-        return interaction.editReply({
-            embeds: [errorEmbed('No Game Profile', `${targetDiscordUser.tag} doesn't have a **${game.name}** profile.`)],
-        });
-    }
+        if (!targetGameProfile) {
+            return interaction.editReply({
+                embeds: [errorEmbed(TITLES.ERROR, `${targetDiscordUser.tag} doesn't have a **${game.name}** profile.`)],
+            });
+        }
 
-    if (targetGameProfile.Roster_UUID) {
-        return interaction.editReply({
-            embeds: [errorEmbed('Already in a Roster', `${targetDiscordUser.tag} is already in a roster for **${game.name}**.`)],
-        });
-    }
+        if (targetGameProfile.Roster_UUID) {
+            return interaction.editReply({
+                embeds: [errorEmbed(TITLES.ERROR, `${targetDiscordUser.tag} is already in a roster for **${game.name}**.`)],
+            });
+        }
 
-    // Check for existing pending invite
-    const { data: existingInvite } = await supabase
-        .from('RosterInvitation')
-        .select('Invite_ID')
-        .eq('Recipient_UUID', targetUser.UUID)
-        .eq('Roster_UUID', roster.Roster_UUID)
-        .eq('Status', 'pending')
-        .single();
+        // Check for existing pending invite
+        const { data: existingInvite } = await supabase
+            .from('RosterInvitation')
+            .select('Invite_ID')
+            .eq('Recipient_UUID', targetUser.UUID)
+            .eq('Roster_UUID', roster.Roster_UUID)
+            .eq('Status', 'pending')
+            .single();
 
-    if (existingInvite) {
-        return interaction.editReply({
-            embeds: [errorEmbed('Already Invited', `${targetDiscordUser.tag} already has a pending invite to your roster.`)],
-        });
-    }
+        if (existingInvite) {
+            return interaction.editReply({
+                embeds: [errorEmbed(TITLES.ERROR, `${targetDiscordUser.tag} already has a pending invite to your roster.`)],
+            });
+        }
 
-    // Create invitation
-    const inviteUUID = generateUUID('inv-');
-    const notiUUID = generateUUID('noti-');
+        // Create invitation
+        const inviteUUID = generateUUID('inv-');
+        const notiUUID = generateUUID('noti-');
 
-    const { error: inviteErr } = await supabase
-        .from('RosterInvitation')
-        .insert({
-            Franchise_UUID: franchise.Franchise_UUID,
-            Recipient_UUID: targetUser.UUID,
+        const { error: inviteErr } = await supabase
+            .from('RosterInvitation')
+            .insert({
+                Franchise_UUID: franchise.Franchise_UUID,
+                Recipient_UUID: targetUser.UUID,
+                Sender_UUID: user.UUID,
+                Roster_UUID: roster.Roster_UUID,
+                Status: 'pending',
+                Invite_UUID: inviteUUID,
+                Notification_UUID: notiUUID,
+                Created_At: new Date().toISOString(),
+            });
+
+        if (inviteErr) {
+            throw inviteErr;
+        }
+
+        // Create notification
+        await supabase.from('Notification').insert({
             Sender_UUID: user.UUID,
-            Roster_UUID: roster.Roster_UUID,
-            Status: 'pending',
-            Invite_UUID: inviteUUID,
+            Receiver_UUID: targetUser.UUID,
+            Notification_Type: 'roster_invite',
             Notification_UUID: notiUUID,
+            Data: JSON.stringify({
+                franchise: franchise.Franchise_Name,
+                game: game.name,
+                inviteUUID,
+            }),
             Created_At: new Date().toISOString(),
         });
 
-    if (inviteErr) {
-        logger.error('Invite error:', inviteErr);
+        // Send DM with accept/reject buttons
+        try {
+            const dmEmbed = new EmbedBuilder()
+                .setColor(config.embedColor)
+                .setTitle('📨 Team Invite!')
+                .setDescription(`**${interaction.user.tag}** has invited you to join **${franchise.Franchise_Name}** for **${game.emoji} ${game.name}**!`)
+                .setFooter({ text: config.botName })
+                .setTimestamp();
+
+            const buttons = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId(`team_accept_${inviteUUID}`)
+                    .setLabel('Accept')
+                    .setStyle(ButtonStyle.Success)
+                    .setEmoji('✅'),
+                new ButtonBuilder()
+                    .setCustomId(`team_reject_${inviteUUID}`)
+                    .setLabel('Reject')
+                    .setStyle(ButtonStyle.Danger)
+                    .setEmoji('❌'),
+            );
+
+            await targetDiscordUser.send({ embeds: [dmEmbed], components: [buttons] });
+        } catch (dmErr) {
+            logger.warn('Could not DM user:', dmErr.message);
+        }
+
         return interaction.editReply({
-            embeds: [errorEmbed('Invite Failed', `Could not send invitation: ${inviteErr.message}`)],
+            embeds: [successEmbed(TITLES.SUCCESS, `Invitation sent to **${targetDiscordUser.tag}** for **${game.emoji} ${game.name}** roster!`)],
         });
+    } catch (error) {
+        await handleCommandError(interaction, error);
     }
-
-    // Create notification
-    await supabase.from('Notification').insert({
-        Sender_UUID: user.UUID,
-        Receiver_UUID: targetUser.UUID,
-        Notification_Type: 'roster_invite',
-        Notification_UUID: notiUUID,
-        Data: JSON.stringify({
-            franchise: franchise.Franchise_Name,
-            game: game.name,
-            inviteUUID,
-        }),
-        Created_At: new Date().toISOString(),
-    });
-
-    // Send DM with accept/reject buttons
-    try {
-        const dmEmbed = new EmbedBuilder()
-            .setColor(config.embedColor)
-            .setTitle('📨 Team Invite!')
-            .setDescription(`**${interaction.user.tag}** has invited you to join **${franchise.Franchise_Name}** for **${game.emoji} ${game.name}**!`)
-            .setFooter({ text: config.botName })
-            .setTimestamp();
-
-        const buttons = new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-                .setCustomId(`team_accept_${inviteUUID}`)
-                .setLabel('Accept')
-                .setStyle(ButtonStyle.Success)
-                .setEmoji('✅'),
-            new ButtonBuilder()
-                .setCustomId(`team_reject_${inviteUUID}`)
-                .setLabel('Reject')
-                .setStyle(ButtonStyle.Danger)
-                .setEmoji('❌'),
-        );
-
-        await targetDiscordUser.send({ embeds: [dmEmbed], components: [buttons] });
-    } catch (dmErr) {
-        logger.warn('Could not DM user:', dmErr.message);
-    }
-
-    return interaction.editReply({
-        embeds: [successEmbed('Invite Sent', `Invitation sent to **${targetDiscordUser.tag}** for **${game.emoji} ${game.name}** roster!`)],
-    });
 }
 
 // ---------- LEAVE ----------
 async function handleLeave(interaction) {
-    const user = await ensureRegistered(interaction);
-    if (!user) return;
+    try {
+        const user = await ensureRegistered(interaction);
+        if (!user) return;
 
-    await interaction.deferReply({ ephemeral: true });
+        await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
-    const gameKey = interaction.options.getString('game');
-    const game = getGame(gameKey);
+        const gameKey = interaction.options.getString('game');
+        const game = getGame(gameKey);
 
-    // Check game profile and roster
-    const { data: member } = await supabase
-        .from(game.memberTable)
-        .select('User_UUID, Roster_UUID')
-        .eq('User_UUID', user.UUID)
-        .single();
+        // Check game profile and roster
+        const { data: member } = await supabase
+            .from(game.memberTable)
+            .select('User_UUID, Roster_UUID')
+            .eq('User_UUID', user.UUID)
+            .single();
 
-    if (!member || !member.Roster_UUID) {
-        return interaction.editReply({
-            embeds: [errorEmbed('Not in a Roster', `You're not in any **${game.name}** roster.`)],
-        });
-    }
+        if (!member || !member.Roster_UUID) {
+            return interaction.editReply({
+                embeds: [errorEmbed(TITLES.ERROR, `You're not in any **${game.name}** roster.`)],
+            });
+        }
 
-    // Check if user is the roster leader
-    const { data: roster } = await supabase
-        .from(game.rosterTable)
-        .select(`*, Franchise_UUID`)
-        .eq('Roster_UUID', member.Roster_UUID)
-        .single();
-
-    if (roster && roster[game.leaderField] === user.UUID) {
-        return interaction.editReply({
-            embeds: [errorEmbed('You\'re the Captain', 'Transfer captain role to another member first with `/team transfer @player`, or disband the team.')],
-        });
-    }
-
-    // Remove from roster
-    await supabase
-        .from(game.memberTable)
-        .update({ Roster_UUID: null })
-        .eq('User_UUID', user.UUID);
-
-    // Decrement member size
-    if (roster) {
-        await supabase
+        // Check if user is the roster leader
+        const { data: roster } = await supabase
             .from(game.rosterTable)
-            .update({ Member_Size: Math.max(0, (roster.Member_Size || 1) - 1) })
-            .eq('Roster_UUID', member.Roster_UUID);
+            .select(`*, Franchise_UUID`)
+            .eq('Roster_UUID', member.Roster_UUID)
+            .single();
+
+        if (roster && roster[game.leaderField] === user.UUID) {
+            return interaction.editReply({
+                embeds: [errorEmbed(TITLES.ERROR, 'Transfer captain role to another member first with `/team transfer @player`, or disband the team.')],
+            });
+        }
+
+        // Remove from roster
+        await supabase
+            .from(game.memberTable)
+            .update({ Roster_UUID: null })
+            .eq('User_UUID', user.UUID);
+
+        // Decrement member size
+        if (roster) {
+            await supabase
+                .from(game.rosterTable)
+                .update({ Member_Size: Math.max(0, (roster.Member_Size || 1) - 1) })
+                .eq('Roster_UUID', member.Roster_UUID);
+        }
+
+        // Update user flag
+        await supabase.from('User').update({ In_Team: false, Updated_At: new Date().toISOString() }).eq('UUID', user.UUID);
+
+        return interaction.editReply({
+            embeds: [successEmbed(TITLES.SUCCESS, `You've left your **${game.name}** roster.`)],
+        });
+    } catch (error) {
+        await handleCommandError(interaction, error);
     }
-
-    // Update user flag
-    await supabase.from('User').update({ In_Team: false, Updated_At: new Date().toISOString() }).eq('UUID', user.UUID);
-
-    return interaction.editReply({
-        embeds: [successEmbed('Left Roster', `You've left your **${game.name}** roster.`)],
-    });
 }
 
 // ---------- REMOVE ----------
 async function handleRemove(interaction) {
-    const user = await ensureRegistered(interaction);
-    if (!user) return;
+    try {
+        const user = await ensureRegistered(interaction);
+        if (!user) return;
 
-    await interaction.deferReply({ ephemeral: true });
+        await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
-    const targetDiscordUser = interaction.options.getUser('player');
-    const gameKey = interaction.options.getString('game');
-    const game = getGame(gameKey);
+        const targetDiscordUser = interaction.options.getUser('player');
+        const gameKey = interaction.options.getString('game');
+        const game = getGame(gameKey);
 
-    // Verify user is a roster leader
-    const { data: franchise } = await supabase
-        .from('Franchise')
-        .select('Franchise_UUID, Franchise_Name')
-        .eq('Owner_ID', user.UUID)
-        .single();
+        // Verify user is a roster leader
+        const { data: franchise } = await supabase
+            .from('Franchise')
+            .select('Franchise_UUID, Franchise_Name')
+            .eq('Owner_ID', user.UUID)
+            .single();
 
-    if (!franchise) {
+        if (!franchise) {
+            return interaction.editReply({
+                embeds: [errorEmbed(TITLES.ERROR, 'Only the team owner can remove members.')],
+            });
+        }
+
+        const { data: roster } = await supabase
+            .from(game.rosterTable)
+            .select('Roster_UUID')
+            .eq('Franchise_UUID', franchise.Franchise_UUID)
+            .single();
+
+        if (!roster) {
+            return interaction.editReply({
+                embeds: [errorEmbed(TITLES.ERROR, `Your team doesn't have a **${game.name}** roster.`)],
+            });
+        }
+
+        // Get target user
+        const { data: targetUser } = await supabase
+            .from('User')
+            .select('UUID')
+            .eq('Discord_ID', targetDiscordUser.id)
+            .single();
+
+        if (!targetUser) {
+            return interaction.editReply({
+                embeds: [errorEmbed(TITLES.NOT_FOUND, `${targetDiscordUser.tag} is not registered.`)],
+            });
+        }
+
+        // Remove from roster
+        const { error } = await supabase
+            .from(game.memberTable)
+            .update({ Roster_UUID: null })
+            .eq('User_UUID', targetUser.UUID)
+            .eq('Roster_UUID', roster.Roster_UUID);
+
+        if (error) {
+            throw error;
+        }
+
+        // Decrement roster size
+        const { data: currentRoster } = await supabase
+            .from(game.rosterTable)
+            .select('Member_Size')
+            .eq('Roster_UUID', roster.Roster_UUID)
+            .single();
+
+        await supabase
+            .from(game.rosterTable)
+            .update({ Member_Size: Math.max(0, (currentRoster?.Member_Size || 1) - 1) })
+            .eq('Roster_UUID', roster.Roster_UUID);
+
+        await supabase.from('User').update({ In_Team: false }).eq('UUID', targetUser.UUID);
+
         return interaction.editReply({
-            embeds: [errorEmbed('Not a Captain', 'Only the team owner can remove members.')],
+            embeds: [successEmbed(TITLES.SUCCESS, `**${targetDiscordUser.tag}** has been removed from the **${game.name}** roster.`)],
         });
+    } catch (error) {
+        await handleCommandError(interaction, error);
     }
-
-    const { data: roster } = await supabase
-        .from(game.rosterTable)
-        .select('Roster_UUID')
-        .eq('Franchise_UUID', franchise.Franchise_UUID)
-        .single();
-
-    if (!roster) {
-        return interaction.editReply({
-            embeds: [errorEmbed('No Roster', `Your team doesn't have a **${game.name}** roster.`)],
-        });
-    }
-
-    // Get target user
-    const { data: targetUser } = await supabase
-        .from('User')
-        .select('UUID')
-        .eq('PWA_Notification_Subscription', targetDiscordUser.id)
-        .single();
-
-    if (!targetUser) {
-        return interaction.editReply({
-            embeds: [errorEmbed('Not Found', `${targetDiscordUser.tag} is not registered.`)],
-        });
-    }
-
-    // Remove from roster
-    const { error } = await supabase
-        .from(game.memberTable)
-        .update({ Roster_UUID: null })
-        .eq('User_UUID', targetUser.UUID)
-        .eq('Roster_UUID', roster.Roster_UUID);
-
-    if (error) {
-        return interaction.editReply({
-            embeds: [errorEmbed('Failed', `Could not remove player: ${error.message}`)],
-        });
-    }
-
-    // Decrement roster size
-    const { data: currentRoster } = await supabase
-        .from(game.rosterTable)
-        .select('Member_Size')
-        .eq('Roster_UUID', roster.Roster_UUID)
-        .single();
-
-    await supabase
-        .from(game.rosterTable)
-        .update({ Member_Size: Math.max(0, (currentRoster?.Member_Size || 1) - 1) })
-        .eq('Roster_UUID', roster.Roster_UUID);
-
-    await supabase.from('User').update({ In_Team: false }).eq('UUID', targetUser.UUID);
-
-    return interaction.editReply({
-        embeds: [successEmbed('Member Removed', `**${targetDiscordUser.tag}** has been removed from the **${game.name}** roster.`)],
-    });
 }
 
 // ---------- TRANSFER ----------
 async function handleTransfer(interaction) {
-    const user = await ensureRegistered(interaction);
-    if (!user) return;
+    try {
+        const user = await ensureRegistered(interaction);
+        if (!user) return;
 
-    await interaction.deferReply({ ephemeral: true });
+        await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
-    const targetDiscordUser = interaction.options.getUser('player');
-    const gameKey = interaction.options.getString('game');
-    const game = getGame(gameKey);
+        const targetDiscordUser = interaction.options.getUser('player');
+        const gameKey = interaction.options.getString('game');
+        const game = getGame(gameKey);
 
-    // Verify ownership
-    const { data: franchise } = await supabase
-        .from('Franchise')
-        .select('Franchise_UUID, Franchise_Name')
-        .eq('Owner_ID', user.UUID)
-        .single();
+        // Verify ownership
+        const { data: franchise } = await supabase
+            .from('Franchise')
+            .select('Franchise_UUID, Franchise_Name')
+            .eq('Owner_ID', user.UUID)
+            .single();
 
-    if (!franchise) {
+        if (!franchise) {
+            return interaction.editReply({
+                embeds: [errorEmbed(TITLES.ERROR, 'Only the team owner can transfer captain role.')],
+            });
+        }
+
+        // Get target user
+        const { data: targetUser } = await supabase
+            .from('User')
+            .select('UUID')
+            .eq('Discord_ID', targetDiscordUser.id)
+            .single();
+
+        if (!targetUser) {
+            return interaction.editReply({
+                embeds: [errorEmbed(TITLES.NOT_FOUND, `${targetDiscordUser.tag} is not registered.`)],
+            });
+        }
+
+        // Check target is in the roster
+        const { data: targetMember } = await supabase
+            .from(game.memberTable)
+            .select('Roster_UUID')
+            .eq('User_UUID', targetUser.UUID)
+            .single();
+
+        const { data: roster } = await supabase
+            .from(game.rosterTable)
+            .select('Roster_UUID')
+            .eq('Franchise_UUID', franchise.Franchise_UUID)
+            .single();
+
+        if (!targetMember || targetMember.Roster_UUID !== roster?.Roster_UUID) {
+            return interaction.editReply({
+                embeds: [errorEmbed(TITLES.ERROR, `${targetDiscordUser.tag} is not in your **${game.name}** roster.`)],
+            });
+        }
+
+        // Transfer leader
+        await supabase
+            .from(game.rosterTable)
+            .update({ [game.leaderField]: targetUser.UUID })
+            .eq('Roster_UUID', roster.Roster_UUID);
+
+        // Transfer franchise ownership
+        await supabase
+            .from('Franchise')
+            .update({ Owner_ID: targetUser.UUID })
+            .eq('Franchise_UUID', franchise.Franchise_UUID);
+
+        await supabase.from('User').update({ Is_Owner: false }).eq('UUID', user.UUID);
+        await supabase.from('User').update({ Is_Owner: true }).eq('UUID', targetUser.UUID);
+
         return interaction.editReply({
-            embeds: [errorEmbed('Not Owner', 'Only the team owner can transfer captain role.')],
+            embeds: [successEmbed(TITLES.SUCCESS, `**${targetDiscordUser.tag}** is now the captain of **${franchise.Franchise_Name}** (${game.name} roster).`)],
         });
+    } catch (error) {
+        await handleCommandError(interaction, error);
     }
-
-    // Get target user
-    const { data: targetUser } = await supabase
-        .from('User')
-        .select('UUID')
-        .eq('PWA_Notification_Subscription', targetDiscordUser.id)
-        .single();
-
-    if (!targetUser) {
-        return interaction.editReply({
-            embeds: [errorEmbed('Not Found', `${targetDiscordUser.tag} is not registered.`)],
-        });
-    }
-
-    // Check target is in the roster
-    const { data: targetMember } = await supabase
-        .from(game.memberTable)
-        .select('Roster_UUID')
-        .eq('User_UUID', targetUser.UUID)
-        .single();
-
-    const { data: roster } = await supabase
-        .from(game.rosterTable)
-        .select('Roster_UUID')
-        .eq('Franchise_UUID', franchise.Franchise_UUID)
-        .single();
-
-    if (!targetMember || targetMember.Roster_UUID !== roster?.Roster_UUID) {
-        return interaction.editReply({
-            embeds: [errorEmbed('Not in Roster', `${targetDiscordUser.tag} is not in your **${game.name}** roster.`)],
-        });
-    }
-
-    // Transfer leader
-    await supabase
-        .from(game.rosterTable)
-        .update({ [game.leaderField]: targetUser.UUID })
-        .eq('Roster_UUID', roster.Roster_UUID);
-
-    // Transfer franchise ownership
-    await supabase
-        .from('Franchise')
-        .update({ Owner_ID: targetUser.UUID })
-        .eq('Franchise_UUID', franchise.Franchise_UUID);
-
-    await supabase.from('User').update({ Is_Owner: false }).eq('UUID', user.UUID);
-    await supabase.from('User').update({ Is_Owner: true }).eq('UUID', targetUser.UUID);
-
-    return interaction.editReply({
-        embeds: [successEmbed('Captain Transferred', `**${targetDiscordUser.tag}** is now the captain of **${franchise.Franchise_Name}** (${game.name} roster).`)],
-    });
 }
 
 // ---------- ROSTER ----------
 async function handleRoster(interaction) {
-    const user = await ensureRegistered(interaction);
-    if (!user) return;
+    try {
+        const user = await ensureRegistered(interaction);
+        if (!user) return;
 
-    await interaction.deferReply();
+        await interaction.deferReply();
 
-    const gameKey = interaction.options.getString('game');
-    const game = getGame(gameKey);
+        const gameKey = interaction.options.getString('game');
+        const game = getGame(gameKey);
 
-    // Get user's game member entry to find roster
-    const { data: member } = await supabase
-        .from(game.memberTable)
-        .select('Roster_UUID')
-        .eq('User_UUID', user.UUID)
-        .single();
-
-    if (!member || !member.Roster_UUID) {
-        return interaction.editReply({
-            embeds: [errorEmbed('Not in a Roster', `You're not in any **${game.name}** roster.\nCreate one with \`/team create\` or accept an invite.`)],
-        });
-    }
-
-    // Get all members in this roster
-    const { data: members, error } = await supabase
-        .from(game.memberTable)
-        .select('User_UUID, In_Game_Name, Game_ID, Role, Rank, Status')
-        .eq('Roster_UUID', member.Roster_UUID);
-
-    if (error || !members || members.length === 0) {
-        return interaction.editReply({
-            embeds: [errorEmbed('No Members', 'Could not find roster members.')],
-        });
-    }
-
-    // Get roster info
-    const { data: roster } = await supabase
-        .from(game.rosterTable)
-        .select(`*, Franchise_UUID`)
-        .eq('Roster_UUID', member.Roster_UUID)
-        .single();
-
-    // Get franchise name
-    let franchiseName = 'Unknown';
-    if (roster?.Franchise_UUID) {
-        const { data: franchise } = await supabase
-            .from('Franchise')
-            .select('Franchise_Name')
-            .eq('Franchise_UUID', roster.Franchise_UUID)
+        // Get user's game member entry to find roster
+        const { data: member } = await supabase
+            .from(game.memberTable)
+            .select('Roster_UUID')
+            .eq('User_UUID', user.UUID)
             .single();
-        if (franchise) franchiseName = franchise.Franchise_Name;
+
+        if (!member || !member.Roster_UUID) {
+            return interaction.editReply({
+                embeds: [errorEmbed(TITLES.ERROR, `You're not in any **${game.name}** roster.\nCreate one with \`/team create\` or accept an invite.`)],
+            });
+        }
+
+        // Get all members in this roster
+        const { data: members, error } = await supabase
+            .from(game.memberTable)
+            .select('User_UUID, In_Game_Name, Game_ID, Role, Rank, Status')
+            .eq('Roster_UUID', member.Roster_UUID);
+
+        if (error || !members || members.length === 0) {
+            return interaction.editReply({
+                embeds: [errorEmbed(TITLES.ERROR, 'Could not find roster members.')],
+            });
+        }
+
+        // Get roster info
+        const { data: roster } = await supabase
+            .from(game.rosterTable)
+            .select(`*, Franchise_UUID`)
+            .eq('Roster_UUID', member.Roster_UUID)
+            .single();
+
+        // Get franchise name
+        let franchiseName = 'Unknown';
+        if (roster?.Franchise_UUID) {
+            const { data: franchise } = await supabase
+                .from('Franchise')
+                .select('Franchise_Name')
+                .eq('Franchise_UUID', roster.Franchise_UUID)
+                .single();
+            if (franchise) franchiseName = franchise.Franchise_Name;
+        }
+
+        // Build member list
+        const memberList = members.map((m, i) => {
+            const isLeader = roster && roster[game.leaderField] === m.User_UUID;
+            return `${i + 1}. **${m.In_Game_Name}** ${isLeader ? '👑' : ''}\n   ID: \`${m.Game_ID}\` | Role: ${m.Role || 'N/A'} | Rank: ${m.Rank || 'N/A'}`;
+        }).join('\n\n');
+
+        const embed = new EmbedBuilder()
+            .setColor(config.embedColor)
+            .setTitle(`${game.emoji} ${franchiseName} — ${game.name} Roster`)
+            .setDescription(memberList)
+            .addFields(
+                { name: 'Members', value: `${members.length}`, inline: true },
+                { name: 'Roster ID', value: `\`${member.Roster_UUID}\``, inline: true },
+            )
+            .setFooter({ text: config.botName })
+            .setTimestamp();
+
+        return interaction.editReply({ embeds: [embed] });
+    } catch (error) {
+        await handleCommandError(interaction, error);
     }
-
-    // Build member list
-    const memberList = members.map((m, i) => {
-        const isLeader = roster && roster[game.leaderField] === m.User_UUID;
-        return `${i + 1}. **${m.In_Game_Name}** ${isLeader ? '👑' : ''}\n   ID: \`${m.Game_ID}\` | Role: ${m.Role || 'N/A'} | Rank: ${m.Rank || 'N/A'}`;
-    }).join('\n\n');
-
-    const embed = new EmbedBuilder()
-        .setColor(config.embedColor)
-        .setTitle(`${game.emoji} ${franchiseName} — ${game.name} Roster`)
-        .setDescription(memberList)
-        .addFields(
-            { name: 'Members', value: `${members.length}`, inline: true },
-            { name: 'Roster ID', value: `\`${member.Roster_UUID}\``, inline: true },
-        )
-        .setFooter({ text: config.botName })
-        .setTimestamp();
-
-    return interaction.editReply({ embeds: [embed] });
 }
 
 // ---------- PROFILE (Team) ----------
 async function handleProfile(interaction) {
-    const user = await ensureRegistered(interaction);
-    if (!user) return;
+    try {
+        const user = await ensureRegistered(interaction);
+        if (!user) return;
 
-    await interaction.deferReply();
+        await interaction.deferReply();
 
-    // Find franchise the user is part of (either owner or member)
-    let franchise = null;
+        // Find franchise the user is part of (either owner or member)
+        let franchise = null;
 
-    // Check if user is owner
-    const { data: ownedFranchise } = await supabase
-        .from('Franchise')
-        .select('*')
-        .eq('Owner_ID', user.UUID)
-        .single();
+        // Check if user is owner
+        const { data: ownedFranchise } = await supabase
+            .from('Franchise')
+            .select('*')
+            .eq('Owner_ID', user.UUID)
+            .single();
 
-    if (ownedFranchise) {
-        franchise = ownedFranchise;
-    } else {
-        // Check rosters across games
-        const { getGameKeys, getGame } = require('../../utils/gameConstants');
-        for (const gKey of getGameKeys()) {
-            const g = getGame(gKey);
-            const { data: member } = await supabase
-                .from(g.memberTable)
-                .select('Roster_UUID')
-                .eq('User_UUID', user.UUID)
-                .single();
-
-            if (member?.Roster_UUID) {
-                const { data: roster } = await supabase
-                    .from(g.rosterTable)
-                    .select('Franchise_UUID')
-                    .eq('Roster_UUID', member.Roster_UUID)
+        if (ownedFranchise) {
+            franchise = ownedFranchise;
+        } else {
+            // Check rosters across games
+            const { getGameKeys, getGame } = require('../../utils/gameConstants');
+            for (const gKey of getGameKeys()) {
+                const g = getGame(gKey);
+                const { data: member } = await supabase
+                    .from(g.memberTable)
+                    .select('Roster_UUID')
+                    .eq('User_UUID', user.UUID)
                     .single();
 
-                if (roster?.Franchise_UUID) {
-                    const { data: f } = await supabase
-                        .from('Franchise')
-                        .select('*')
-                        .eq('Franchise_UUID', roster.Franchise_UUID)
+                if (member?.Roster_UUID) {
+                    const { data: roster } = await supabase
+                        .from(g.rosterTable)
+                        .select('Franchise_UUID')
+                        .eq('Roster_UUID', member.Roster_UUID)
                         .single();
-                    if (f) { franchise = f; break; }
+
+                    if (roster?.Franchise_UUID) {
+                        const { data: f } = await supabase
+                            .from('Franchise')
+                            .select('*')
+                            .eq('Franchise_UUID', roster.Franchise_UUID)
+                            .single();
+                        if (f) { franchise = f; break; }
+                    }
                 }
             }
         }
-    }
 
-    if (!franchise) {
-        return interaction.editReply({
-            embeds: [errorEmbed('No Team', 'You\'re not in any team. Create one with `/team create`.')],
-        });
-    }
+        if (!franchise) {
+            return interaction.editReply({
+                embeds: [errorEmbed(TITLES.ERROR, 'You\'re not in any team. Create one with `/team create`.')],
+            });
+        }
 
-    const embed = new EmbedBuilder()
-        .setColor(config.embedColor)
-        .setTitle(`🏠 ${franchise.Franchise_Name}`)
-        .setDescription(franchise.Description || 'No description set.')
-        .addFields(
-            { name: 'Franchise ID', value: `\`${franchise.Franchise_UUID}\``, inline: true },
-            { name: 'Created', value: franchise.Created_At ? new Date(franchise.Created_At).toLocaleDateString() : 'N/A', inline: true },
-        )
-        .setFooter({ text: config.botName })
-        .setTimestamp();
+        const embed = new EmbedBuilder()
+            .setColor(config.embedColor)
+            .setTitle(`🏠 ${franchise.Franchise_Name}`)
+            .setDescription(franchise.Description || 'No description set.')
+            .addFields(
+                { name: 'Franchise ID', value: `\`${franchise.Franchise_UUID}\``, inline: true },
+                { name: 'Created', value: franchise.Created_At ? new Date(franchise.Created_At).toLocaleDateString() : 'N/A', inline: true },
+            )
+            .setFooter({ text: config.botName })
+            .setTimestamp();
 
-    if (franchise.Franchise_Logo_Path) {
-        embed.setThumbnail(franchise.Franchise_Logo_Path);
-    }
-    if (franchise.Banner_Path) {
-        embed.setImage(franchise.Banner_Path);
-    }
+        if (franchise.Franchise_Logo_Path) {
+            const url = getPublicUrl(franchise.Franchise_Logo_Path);
+            if (url) embed.setThumbnail(url);
+        }
+        if (franchise.Banner_Path) {
+            const url = getPublicUrl(franchise.Banner_Path);
+            if (url) embed.setImage(url);
+        }
 
-    return interaction.editReply({ embeds: [embed] });
+        return interaction.editReply({ embeds: [embed] });
+    } catch (error) {
+        await handleCommandError(interaction, error);
+    }
 }
 
 // ---------- BUTTON HANDLERS ----------

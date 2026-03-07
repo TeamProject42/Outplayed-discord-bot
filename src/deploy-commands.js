@@ -1,8 +1,8 @@
-const { REST, Routes } = require('discord.js');
-const config = require('./config');
-const logger = require('./utils/logger');
+const { Client, GatewayIntentBits, REST, Routes } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
+const config = require('./config');
+const logger = require('./utils/logger');
 
 const commands = [];
 const commandsPath = path.join(__dirname, 'commands');
@@ -25,28 +25,37 @@ for (const folder of commandFolders) {
     }
 }
 
+const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 const rest = new REST({ version: '10' }).setToken(config.discordToken);
 
-(async () => {
-    try {
-        logger.info(`Deploying ${commands.length} slash commands...`);
+client.once('ready', async () => {
+    logger.info(`Deploying ${commands.length} slash commands...`);
+    const guilds = client.guilds.cache.map(guild => guild.id);
 
-        if (config.guildId) {
-            // Guild-specific (instant, for development)
-            await rest.put(
-                Routes.applicationGuildCommands(config.clientId, config.guildId),
-                { body: commands },
-            );
-            logger.success(`Deployed ${commands.length} commands to guild ${config.guildId}`);
-        } else {
-            // Global (takes ~1 hour to propagate)
-            await rest.put(
-                Routes.applicationCommands(config.clientId),
-                { body: commands },
-            );
-            logger.success(`Deployed ${commands.length} commands globally`);
+    try {
+        // ALWAYS push to Global to ensure fallback
+        await rest.put(Routes.applicationCommands(config.clientId), { body: commands });
+        logger.success('Deployed globally');
+
+        // Force Sync across all active Guilds immediately (bypasses 1-hour global wait)
+        for (const guildId of guilds) {
+            try {
+                await rest.put(
+                    Routes.applicationGuildCommands(config.clientId, guildId),
+                    { body: commands },
+                );
+                logger.success(`Deployed ${commands.length} commands to guild ${guildId}`);
+            } catch (err) {
+                logger.error(`Error deploying to guild ${guildId}:`, err);
+            }
         }
-    } catch (error) {
-        logger.error('Failed to deploy commands:', error);
+    } catch (e) {
+        logger.error('Failed to deploy globally:', e);
     }
-})();
+    
+    // Shut down the temporary deployment client
+    client.destroy();
+    process.exit(0);
+});
+
+client.login(config.discordToken);

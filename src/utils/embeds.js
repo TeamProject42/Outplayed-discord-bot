@@ -53,8 +53,12 @@ function profileEmbed(user, gameProfiles = []) {
         .setFooter({ text: `${config.botName} • UUID: ${user.UUID}` })
         .setTimestamp();
 
-    if (user.Profile_Pic_Url) {
-        embed.setThumbnail(user.Profile_Pic_Url);
+    if (user.Profile_Pic_Url && /^https?:\/\/.+/.test(user.Profile_Pic_Url)) {
+        try {
+            embed.setThumbnail(user.Profile_Pic_Url);
+        } catch (e) {
+            // ignore invalid url
+        }
     }
 
     if (gameProfiles.length > 0) {

@@ -1,76 +1,66 @@
 const {
     SlashCommandBuilder,
-    ModalBuilder,
-    TextInputBuilder,
-    TextInputStyle,
-    ActionRowBuilder,
+    MessageFlags,
 } = require('discord.js');
 const { supabase } = require('../../database/supabase');
 const { ensureRegistered } = require('../../middleware/auth');
-const { successEmbed, errorEmbed, profileEmbed } = require('../../utils/embeds');
+const { errorEmbed, profileEmbed } = require('../../utils/embeds');
 const { getGame, getGameKeys } = require('../../utils/gameConstants');
+const { handleCommandError } = require('../../utils/errorHandler');
+const { ERRORS, TITLES } = require('../../utils/constants');
 const logger = require('../../utils/logger');
 
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('profile')
-        .setDescription('View or edit your player profile')
-        .addSubcommand(sub =>
-            sub.setName('view')
-                .setDescription('View a player profile')
-                .addUserOption(opt =>
-                    opt.setName('user')
-                        .setDescription('The user to view (defaults to you)')
-                        .setRequired(false)))
-        .addSubcommand(sub =>
-            sub.setName('edit')
-                .setDescription('Edit your profile')
-                .addStringOption(opt =>
-                    opt.setName('field')
-                        .setDescription('Which field to edit')
-                        .setRequired(true)
-                        .addChoices(
-                            { name: '📝 Display Name', value: 'name' },
-                            { name: '🌍 Region', value: 'region' },
-                            { name: '🏳️ Country', value: 'country' },
-                            { name: '📧 Email', value: 'email' },
-                            { name: '🏫 Institute', value: 'institute' },
-                        ))),
+        .setDescription('View a player profile')
+        .addStringOption(opt =>
+            opt.setName('username')
+                .setDescription('Search by Outplayed username')
+                .setRequired(false))
+        .addUserOption(opt =>
+            opt.setName('discordname')
+                .setDescription('Search by Discord @mention')
+                .setRequired(false)),
 
     async execute(interaction) {
-        let sub;
         try {
-            sub = interaction.options.getSubcommand();
-        } catch {
-            sub = 'view'; // Default to view if no subcommand (cached old command)
-        }
-
-        if (sub === 'view') {
-            return handleView(interaction);
-        } else if (sub === 'edit') {
-            return handleEdit(interaction);
+            return await handleView(interaction);
+        } catch (error) {
+            await handleCommandError(interaction, error);
         }
     },
 };
 
 async function handleView(interaction) {
-    const targetUser = interaction.options.getUser('user') || interaction.user;
-    const discordId = targetUser.id;
+    const targetUsername = interaction.options.getString('username');
+    const targetDiscordUser = interaction.options.getUser('discordname');
+    const discordId = targetDiscordUser ? targetDiscordUser.id : interaction.user.id;
 
-    await interaction.deferReply();
+    try {
+        await interaction.deferReply({ flags: targetUsername ? [] : [MessageFlags.Ephemeral] });
+    } catch (err) {
+        logger.warn('Interaction expired before deferReply in /profile view');
+        return;
+    }
 
-    // Fetch user from Supabase (Discord ID stored in PWA_Notification_Subscription)
-    const { data: user, error } = await supabase
-        .from('User')
-        .select('*')
-        .eq('PWA_Notification_Subscription', discordId)
-        .single();
+    let query = supabase.from('User').select('*');
+
+    if (targetUsername) {
+        query = query.ilike('Username', targetUsername);
+    } else {
+        query = query.eq('Discord_ID', discordId);
+    }
+
+    const { data: user, error } = await query.single();
 
     if (error || !user) {
         return interaction.editReply({
-            embeds: [errorEmbed('Not Found', targetUser.id === interaction.user.id
-                ? 'You haven\'t registered yet. Run `/start` first.'
-                : `${targetUser.tag} hasn't registered on Outplayed.`)],
+            embeds: [errorEmbed(TITLES.NOT_FOUND, targetUsername
+                ? `Player with username **${targetUsername}** hasn't registered on Outplayed.`
+                : (targetDiscordUser
+                    ? `${targetDiscordUser.tag} hasn't registered on Outplayed.`
+                    : ERRORS.NOT_REGISTERED))],
         });
     }
 
@@ -126,85 +116,3 @@ async function handleView(interaction) {
 
     return interaction.editReply({ embeds: [embed] });
 }
-
-async function handleEdit(interaction) {
-    const user = await ensureRegistered(interaction);
-    if (!user) return;
-
-    const field = interaction.options.getString('field');
-
-    const fieldLabels = {
-        name: 'Display Name',
-        region: 'Region',
-        country: 'Country',
-        email: 'Email',
-        institute: 'Institute',
-    };
-
-    const dbColumns = {
-        name: 'Name',
-        region: 'Region',
-        country: 'Country',
-        email: 'Email',
-        institute: 'Institute',
-    };
-
-    const modal = new ModalBuilder()
-        .setCustomId(`profile_edit_modal_${field}`)
-        .setTitle(`Edit ${fieldLabels[field]}`);
-
-    const input = new TextInputBuilder()
-        .setCustomId('edit_value')
-        .setLabel(`New ${fieldLabels[field]}`)
-        .setPlaceholder(`Enter your new ${fieldLabels[field].toLowerCase()}`)
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true)
-        .setMaxLength(100);
-
-    if (user[dbColumns[field]]) {
-        input.setValue(user[dbColumns[field]]);
-    }
-
-    modal.addComponents(new ActionRowBuilder().addComponents(input));
-    await interaction.showModal(modal);
-}
-
-/**
- * Handle profile edit modal submission.
- */
-async function handleProfileEditModal(interaction) {
-    const field = interaction.customId.replace('profile_edit_modal_', '');
-    const newValue = interaction.fields.getTextInputValue('edit_value');
-    const discordId = interaction.user.id;
-
-    const dbColumns = {
-        name: 'Name',
-        region: 'Region',
-        country: 'Country',
-        email: 'Email',
-        institute: 'Institute',
-    };
-
-    await interaction.deferReply({ ephemeral: true });
-
-    const { error } = await supabase
-        .from('User')
-        .update({
-            [dbColumns[field]]: newValue,
-            Updated_At: new Date().toISOString(),
-        })
-        .eq('PWA_Notification_Subscription', discordId);
-
-    if (error) {
-        logger.error('Profile edit error:', error);
-        return interaction.editReply({
-            embeds: [errorEmbed('Update Failed', `Could not update your ${field}: ${error.message}`)],
-        });
-    }
-
-    return interaction.editReply({
-        embeds: [successEmbed('Profile Updated', `Your **${field}** has been updated to: **${newValue}**`)],
-    });
-}
-
-module.exports.handleProfileEditModal = handleProfileEditModal;

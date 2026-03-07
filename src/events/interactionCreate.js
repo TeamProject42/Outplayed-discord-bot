@@ -1,5 +1,8 @@
 const { errorEmbed } = require('../utils/embeds');
+const { MessageFlags } = require('discord.js');
 const { isRateLimited } = require('../middleware/rateLimiter');
+const { handleCommandError } = require('../utils/errorHandler');
+const { ERRORS, TITLES } = require('../utils/constants');
 const logger = require('../utils/logger');
 
 module.exports = {
@@ -9,8 +12,8 @@ module.exports = {
         if (isRateLimited(interaction.user.id)) {
             if (interaction.isRepliable()) {
                 return interaction.reply({
-                    embeds: [errorEmbed('Slow Down!', 'You\'re sending commands too fast. Please wait a few seconds.')],
-                    ephemeral: true,
+                    embeds: [errorEmbed('Slow Down!', ERRORS.RATE_LIMIT)],
+                    flags: [MessageFlags.Ephemeral],
                 });
             }
             return;
@@ -27,16 +30,7 @@ module.exports = {
             try {
                 await command.execute(interaction);
             } catch (error) {
-                logger.error(`Error executing /${interaction.commandName}:`, error);
-                const reply = {
-                    embeds: [errorEmbed('Command Error', 'Something went wrong while executing this command. Please try again.')],
-                    ephemeral: true,
-                };
-                if (interaction.replied || interaction.deferred) {
-                    await interaction.followUp(reply);
-                } else {
-                    await interaction.reply(reply);
-                }
+                await handleCommandError(interaction, error);
             }
             return;
         }
@@ -60,13 +54,7 @@ module.exports = {
                 const buttonHandler = require('../interactions/buttons');
                 await buttonHandler.execute(interaction);
             } catch (error) {
-                logger.error('Button interaction error:', error);
-                if (interaction.isRepliable() && !interaction.replied) {
-                    await interaction.reply({
-                        embeds: [errorEmbed('Error', 'Something went wrong with this button. Please try again.')],
-                        ephemeral: true,
-                    });
-                }
+                await handleCommandError(interaction, error);
             }
             return;
         }
@@ -77,13 +65,7 @@ module.exports = {
                 const menuHandler = require('../interactions/selectMenus');
                 await menuHandler.execute(interaction);
             } catch (error) {
-                logger.error('Select menu interaction error:', error);
-                if (interaction.isRepliable() && !interaction.replied) {
-                    await interaction.reply({
-                        embeds: [errorEmbed('Error', 'Something went wrong with this selection. Please try again.')],
-                        ephemeral: true,
-                    });
-                }
+                await handleCommandError(interaction, error);
             }
             return;
         }
@@ -94,13 +76,7 @@ module.exports = {
                 const modalHandler = require('../interactions/modals');
                 await modalHandler.execute(interaction);
             } catch (error) {
-                logger.error('Modal interaction error:', error);
-                if (interaction.isRepliable() && !interaction.replied) {
-                    await interaction.reply({
-                        embeds: [errorEmbed('Error', 'Something went wrong submitting this form. Please try again.')],
-                        ephemeral: true,
-                    });
-                }
+                await handleCommandError(interaction, error);
             }
             return;
         }

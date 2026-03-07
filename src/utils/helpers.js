@@ -53,10 +53,28 @@ function paginate(array, pageSize = 10) {
     return pages;
 }
 
+/**
+ * Get public URL for a Supabase storage path
+ */
+function getPublicUrl(path) {
+    if (!path) return null;
+    if (path.startsWith('http')) return path;
+    
+    const parts = path.split('/');
+    if (parts.length < 2) return path;
+    
+    const bucket = parts[0];
+    const filePath = parts.slice(1).join('/');
+    
+    const config = require('../config');
+    return `${config.supabaseUrl}/storage/v1/object/public/${bucket}/${filePath}`;
+}
+
 module.exports = {
     generateUUID,
     formatDate,
     formatTime,
     truncate,
     paginate,
+    getPublicUrl,
 };

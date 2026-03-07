@@ -15,7 +15,7 @@ async function execute(interaction) {
 
     // --- Profile Edit Modal ---
     if (customId.startsWith('profile_edit_modal_')) {
-        const { handleProfileEditModal } = require('../commands/profile/profile');
+        const { handleProfileEditModal } = require('../commands/profile/editprofile');
         return handleProfileEditModal(interaction);
     }
 
@@ -27,7 +27,7 @@ async function execute(interaction) {
 
     // --- Match Result Modal ---
     if (customId.startsWith('result_modal_')) {
-        const { handleResultModal } = require('../commands/match/result');
+        const { handleResultModal } = require('../commands/match/matches');
         return handleResultModal(interaction);
     }
 

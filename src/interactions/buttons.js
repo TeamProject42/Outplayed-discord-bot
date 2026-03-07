@@ -20,24 +20,24 @@ async function execute(interaction) {
 
     // --- Match Check-in ---
     if (customId.startsWith('checkin_')) {
-        const { handleCheckinButton } = require('../commands/match/checkin');
+        const { handleCheckinButton } = require('../commands/match/matches');
         return handleCheckinButton(interaction);
     }
 
     // --- Match Result Confirm ---
     if (customId.startsWith('result_confirm_')) {
-        const { handleResultConfirm } = require('../commands/match/result');
+        const { handleResultConfirm } = require('../commands/match/matches');
         return handleResultConfirm(interaction);
     }
 
     if (customId.startsWith('result_deny_')) {
-        const { handleResultDeny } = require('../commands/match/result');
+        const { handleResultDeny } = require('../commands/match/matches');
         return handleResultDeny(interaction);
     }
 
     // --- Tournament Registration ---
     if (customId.startsWith('tournament_register_')) {
-        const { handleTournamentRegisterButton } = require('../commands/tournament/register');
+        const { handleTournamentRegisterButton } = require('../commands/tournament/tournaments');
         return handleTournamentRegisterButton(interaction);
     }
 
